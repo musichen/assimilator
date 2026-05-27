@@ -1,0 +1,52 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build outputs
+dist/
+build/
+.next/
+.turbo/
+coverage/
+playwright-report/
+test-results/
+
+# local runtime/temp outputs
+.tmp/
+tmp/
+temp/
+*.log
+logs/
+.DS_Store
+
+# local Python tools
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+
+# local private/generated ASSIMILATOR workspace
+knowledge-system/
+
+# agent run artifacts and private planning exports
+.assimilator/
+*_discussion.txt
+
+# cloned/reference projects used during implementation only
+_reference_projects/
+_project_references/
+
+# non-PNPM package manager artifacts
+package-lock.json
+yarn.lock
+bun.lockb

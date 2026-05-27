@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "resolveJsonModule": true,
+    "noUncheckedIndexedAccess": true,
+    "outDir": "dist"
+  },
+  "include": ["apps/**/*.ts", "packages/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

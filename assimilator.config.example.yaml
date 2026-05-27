@@ -1,0 +1,10 @@
+workspace_name: knowledge-system
+privacy_mode: local_first
+default_privacy_level: private
+created_at: "2026-01-01T00:00:00.000Z"
+updated_at: "2026-01-01T00:00:00.000Z"
+portal:
+  title: ASSIMILATOR Knowledge Portal
+memory:
+  export_targets:
+    - jsonl

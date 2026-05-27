@@ -1,0 +1,37 @@
+{
+  "name": "assimilator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first knowledge ingestion, wiki compilation, portal rendering, and agent memory export.",
+  "type": "module",
+  "scripts": {
+    "assimilate": "tsx apps/cli/src/index.ts",
+    "web": "tsx apps/web/server.ts",
+    "telegram": "tsx apps/telegram/bot.ts",
+    "setup:python-tools": "bash scripts/setup-python-tools.sh",
+    "smoke": "tsx scripts/smoke-all.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.base.json --noEmit",
+    "lint": "tsc -p tsconfig.base.json --noEmit"
+  },
+  "packageManager": "pnpm@9.15.4",
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^22.15.29",
+    "@types/node-telegram-bot-api": "^0.64.14",
+    "@types/react": "^19.2.15",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.0.2",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
+    "node-telegram-bot-api": "^0.67.0",
+    "vite": "^8.0.14"
+  }
+}

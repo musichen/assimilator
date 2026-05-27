@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ASSIMILATOR Converter</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">ASSIMILATOR</p>
+        <h1>Convert Anything to Markdown and HTML</h1>
+        <p>Drop files or paste URLs. ASSIMILATOR converts them locally into clean Markdown, rendered HTML, and saved conversion artifacts.</p>
+      </div>
+    </section>
+
+    <section class="converter">
+      <div id="dropzone" class="dropzone">
+        <input id="fileInput" type="file" hidden>
+        <div class="drop-title">Drag & drop a file</div>
+        <div class="muted">PDF, DOCX, PPTX, XLSX, CSV, images, HTML, TXT, MD, EPUB, and more</div>
+        <button id="pickFile" type="button">Choose File</button>
+      </div>
+
+      <form id="urlForm" class="url-form">
+        <input id="urlInput" type="url" placeholder="https://example.com/article">
+        <button type="submit">Convert URL</button>
+      </form>
+    </section>
+
+    <section id="status" class="status" hidden></section>
+
+    <section id="result" class="result" hidden>
+      <div class="result-head">
+        <div>
+          <p class="eyebrow">Result</p>
+          <h2 id="resultTitle"></h2>
+        </div>
+        <div class="actions">
+          <button id="copyMarkdown" type="button">Copy MD</button>
+          <button id="downloadMarkdown" type="button">Download MD</button>
+          <button id="downloadHtml" type="button">Download HTML</button>
+        </div>
+      </div>
+      <div class="tabs">
+        <button class="tab active" data-tab="markdown" type="button">Markdown</button>
+        <button class="tab" data-tab="html" type="button">HTML Preview</button>
+      </div>
+      <pre id="markdownPane" class="pane"></pre>
+      <iframe id="htmlPane" class="pane" hidden title="HTML preview"></iframe>
+      <p id="paths" class="muted"></p>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
