@@ -1,9 +1,16 @@
 import path from "node:path";
+import os from "node:os";
 
-export const DEFAULT_WORKSPACE = "knowledge-system";
+// ASSIMILATOR_WORKSPACE env var overrides the default — lets users point
+// at an external drive or shared vault without passing --workspace every time.
+export const DEFAULT_WORKSPACE = process.env.ASSIMILATOR_WORKSPACE ?? "knowledge-system";
 
 export function resolveWorkspace(workspace?: string): string {
-  return path.resolve(workspace ?? DEFAULT_WORKSPACE);
+  const raw = workspace ?? DEFAULT_WORKSPACE;
+  const expanded = raw.startsWith("~")
+    ? path.join(os.homedir(), raw.slice(1))
+    : raw;
+  return path.isAbsolute(expanded) ? expanded : path.resolve(expanded);
 }
 
 export const workspaceDirs = [

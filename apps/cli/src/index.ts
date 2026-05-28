@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import React from "react";
 import { render } from "ink";
 import { initWorkspace } from "./core/workspace.js";
-import { resolveWorkspace } from "./core/paths.js";
+import { resolveWorkspace, DEFAULT_WORKSPACE } from "./core/paths.js";
 import { getWorkspaceStatus } from "./core/status.js";
 import { ingestFile, ingestFolder, ingestUrl, processInbox } from "./core/ingest.js";
 import { convertAnything } from "./core/convert.js";
@@ -25,7 +25,7 @@ program
   .name("assimilate")
   .description("ASSIMILATOR local-first knowledge compiler")
   .version("0.1.0")
-  .option("-w, --workspace <path>", "knowledge workspace path", "knowledge-system");
+  .option("-w, --workspace <path>", "knowledge workspace path", DEFAULT_WORKSPACE);
 
 program
   .command("init")
