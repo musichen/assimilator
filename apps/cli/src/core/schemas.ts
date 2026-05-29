@@ -32,6 +32,7 @@ export const ProcessingStatusSchema = z.enum(["pending", "processed", "failed", 
 
 export const WorkspaceConfigSchema = z.object({
   workspace_name: z.string().min(1),
+  workspace_path: z.string().default(""),   // absolute or ~ path; overrides workspace_name when set
   privacy_mode: PrivacyModeSchema.default("local_first"),
   default_privacy_level: PrivacyLevelSchema.default("private"),
   created_at: z.string().datetime(),

@@ -1,17 +1,45 @@
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs/promises";
+import { readConfig } from "./config.js";
 
-// ASSIMILATOR_WORKSPACE env var overrides the default — lets users point
-// at an external drive or shared vault without passing --workspace every time.
-export const DEFAULT_WORKSPACE = process.env.ASSIMILATOR_WORKSPACE ?? "knowledge-system";
+// workspace_path in config overrides the default workspace_name path.
+// Supports ~ expansion. Falls back to workspace_name resolved from CWD.
+export async function resolveWorkspacePath(workspace?: string): Promise<string> {
+  // 1. Explicit override passed in
+  if (workspace) {
+    return expandAndResolve(workspace);
+  }
+  // 2. Check ASSIMILATOR_WORKSPACE env var (already in DEFAULT_WORKSPACE)
+  // 3. Try reading workspace_path from config file
+  try {
+    const cwd = process.cwd();
+    const configPath = path.join(cwd, "assimilator.config.yaml");
+    await fs.access(configPath);
+    const config = await readConfig(cwd);
+    if (config.workspace_path) {
+      return expandAndResolve(config.workspace_path);
+    }
+  } catch {
+    // no config file — fall through
+  }
+  // 4. Fall back to DEFAULT_WORKSPACE (which already reads ASSIMILATOR_WORKSPACE)
+  return expandAndResolve(process.env.ASSIMILATOR_WORKSPACE ?? "knowledge-system");
+}
 
-export function resolveWorkspace(workspace?: string): string {
-  const raw = workspace ?? DEFAULT_WORKSPACE;
-  const expanded = raw.startsWith("~")
-    ? path.join(os.homedir(), raw.slice(1))
-    : raw;
+function expandAndResolve(raw: string): string {
+  const expanded = raw.startsWith("~") ? path.join(os.homedir(), raw.slice(1)) : raw;
   return path.isAbsolute(expanded) ? expanded : path.resolve(expanded);
 }
+
+// Legacy sync export (kept for backward compat during transition)
+export const DEFAULT_WORKSPACE = process.env.ASSIMILATOR_WORKSPACE ?? "knowledge-system";
+
+export const resolveWorkspace = (workspace?: string): string => {
+  // Sync version for code that hasn't migrated to async yet
+  const raw = workspace ?? DEFAULT_WORKSPACE;
+  return expandAndResolve(raw);
+};
 
 export const workspaceDirs = [
   "inbox/drop",

@@ -1,9 +1,11 @@
 workspace_name: knowledge-system
-# Path to the knowledge workspace directory.
-# Can be overridden at runtime via:
-#   ASSIMILATOR_WORKSPACE=~/my-kb pnpm assimilate ...
-#   pnpm assimilate --workspace ~/my-kb ...
-# Supports ~ expansion (e.g. ~/knowledge-system)
+# Absolute path or ~ expansion to the knowledge workspace directory.
+# Takes precedence over workspace_name when set.
+# Supports ~ (home directory) and absolute paths.
+# Examples:
+#   /Volumes/Drive/knowledge-system
+#   ~/knowledge-system
+workspace_path: ~/knowledge-system
 privacy_mode: local_first
 default_privacy_level: private
 created_at: "2026-01-01T00:00:00.000Z"
