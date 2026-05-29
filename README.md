@@ -475,10 +475,32 @@ pnpm setup:python-tools
 Default workspace:
 
 ```txt
-knowledge-system/
+knowledge-system/          # relative to the project root
 ```
 
-Important folders:
+To use a different workspace directory, set the `ASSIMILATOR_WORKSPACE`
+environment variable — this is the recommended approach and works across
+CLI, Telegram bot, and web app without editing config files:
+
+```bash
+# External knowledge base (e.g. on a different drive or shared vault)
+export ASSIMILATOR_WORKSPACE=~/knowledge-system
+
+# Or inline:
+ASSIMILATOR_WORKSPACE=/path/to/my-kb pnpm assimilate convert --url https://...
+
+# ~ expansion is supported:
+ASSIMILATOR_WORKSPACE=~/my-kb pnpm assimilate ...
+```
+
+Or pass `--workspace` on the CLI directly (uses `ASSIMILATOR_WORKSPACE` as
+the default value, so env var and flag work together):
+
+```bash
+pnpm assimilate --workspace ~/my-kb convert --file ./doc.pdf
+```
+
+Important folders inside the workspace:
 
 ```txt
 knowledge-system/
