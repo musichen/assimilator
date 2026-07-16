@@ -1,0 +1,21 @@
+{
+  "name": "@assimilator/webscraping",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-tier web scraping with Python Scrapling bridge and Puppeteer fallback.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "setup:python": "cd ../../python && pip install -r requirements.txt"
+  },
+  "dependencies": {
+    "puppeteer-core": "^25.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "typescript": "^5.8.3"
+  }
+}

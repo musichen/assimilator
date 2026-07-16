@@ -1,16 +1,22 @@
 import { convertUrlWithMarkitLibrary, type MarkitAdapterResult } from "./markit.js";
 import { convertWithMarkitdownCli } from "./markitdown.js";
 import { convertYoutubeWithYtDlp, isYoutubeUrl, readYoutubeTitle } from "./youtube.js";
+import { isLinkedinUrl, convertLinkedinWithPuppeteer } from "./linkedin.js";
+import { isDifficultSite, convertDifficultSite } from "./webscraping.js";
 
 export interface RemoteConversionResult {
   markdown: string;
   title?: string;
-  sourceType: "url" | "youtube";
+  sourceType: "url" | "youtube" | "linkedin";
   warnings: string[];
-  converter: "yt-dlp" | "markit-ai" | "markitdown";
+  converter: "yt-dlp" | "markit-ai" | "markitdown" | "puppeteer" | "webscraping";
 }
 
-export async function convertRemoteToMarkdown(url: string, onProgress?: (message: string) => void): Promise<RemoteConversionResult> {
+export async function convertRemoteToMarkdown(
+  url: string,
+  onProgress?: (message: string) => void,
+  respectTos?: boolean,
+): Promise<RemoteConversionResult> {
   const warnings: string[] = [];
   const youtube = isYoutubeUrl(url);
   if (youtube) onProgress?.("YouTube URL detected");
@@ -49,13 +55,80 @@ export async function convertRemoteToMarkdown(url: string, onProgress?: (message
     ].join("\n"));
   }
 
+  const linkedin = isLinkedinUrl(url);
+  if (linkedin) {
+    onProgress?.("LinkedIn URL detected");
+    try {
+      onProgress?.("Launching headless Chrome for LinkedIn content extraction");
+      const result = await convertLinkedinWithPuppeteer(url, {
+        headless: true,
+        userDataDir: process.env.LINKEDIN_USER_DATA_DIR,
+      });
+      if (result.markdown.trim()) {
+        onProgress?.("LinkedIn content extracted successfully");
+        return {
+          markdown: result.markdown,
+          title: result.title,
+          sourceType: "linkedin",
+          warnings: [...warnings, ...result.warnings],
+          converter: "puppeteer",
+        };
+      }
+      warnings.push("Puppeteer extracted empty content — may require login");
+    } catch (error) {
+      warnings.push(`Puppeteer failed: ${error instanceof Error ? error.message : String(error)}`);
+      onProgress?.("LinkedIn Puppeteer extraction failed");
+    }
+
+    // LinkedIn fallback: try webscraping multi-tier chain
+    try {
+      onProgress?.("Trying multi-tier webscraping fallback for LinkedIn");
+      const wsResult = await convertDifficultSite(url, onProgress, respectTos);
+      if (wsResult.markdown.trim()) {
+        return {
+          markdown: wsResult.markdown,
+          title: wsResult.title,
+          sourceType: "linkedin",
+          warnings: [...warnings, ...wsResult.warnings],
+          converter: "webscraping",
+        };
+      }
+      warnings.push("Webscraping returned empty content");
+    } catch (error) {
+      warnings.push(`Webscraping fallback failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    // Fall through to generic converters as last resort
+    onProgress?.("Falling back to generic URL converters for LinkedIn");
+  }
+
+  // For other difficult sites, try webscraping before generic converters
+  const difficult = !linkedin && isDifficultSite(url);
+  if (difficult) {
+    onProgress?.("Difficult site detected — trying multi-tier webscraping");
+    try {
+      const wsResult = await convertDifficultSite(url, onProgress, respectTos);
+      if (wsResult.markdown.trim()) {
+        return {
+          markdown: wsResult.markdown,
+          title: wsResult.title,
+          sourceType: "url",
+          warnings: [...warnings, ...wsResult.warnings],
+          converter: "webscraping",
+        };
+      }
+    } catch (error) {
+      warnings.push(`Webscraping failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    onProgress?.("Webscraping failed — falling back to generic converters");
+  }
+
   try {
     onProgress?.("Trying markit-ai URL conversion");
     const result: MarkitAdapterResult = await convertUrlWithMarkitLibrary(url);
     return {
       markdown: result.markdown,
       title: normalizeRemoteTitle(result.title, youtubeTitle),
-      sourceType: "url",
+      sourceType: linkedin ? "linkedin" : "url",
       warnings: [...warnings, ...result.warnings],
       converter: "markit-ai"
     };
@@ -65,8 +138,29 @@ export async function convertRemoteToMarkdown(url: string, onProgress?: (message
   }
 
   onProgress?.("Trying Microsoft MarkItDown URL fallback");
-  const fallback = await convertWithMarkitdownCli(url);
-  return { markdown: fallback.markdown, title: fallback.title, sourceType: "url", warnings: [...warnings, ...fallback.warnings], converter: "markitdown" };
+  try {
+    const fallback = await convertWithMarkitdownCli(url);
+    return { markdown: fallback.markdown, title: fallback.title, sourceType: linkedin ? "linkedin" : "url", warnings: [...warnings, ...fallback.warnings], converter: "markitdown" };
+  } catch (markitError) {
+    warnings.push(`markitdown failed: ${markitError instanceof Error ? markitError.message : String(markitError)}`);
+    // Retry with webscraping tier chain on 403/blocked responses
+    try {
+      onProgress?.("MarkItDown blocked — retrying with webscraping tier chain");
+      const wsResult = await convertDifficultSite(url, onProgress, respectTos);
+      if (wsResult.markdown.trim()) {
+        return {
+          markdown: wsResult.markdown,
+          title: wsResult.title,
+          sourceType: linkedin ? "linkedin" : "url",
+          warnings: [...warnings, ...wsResult.warnings],
+          converter: "webscraping",
+        };
+      }
+    } catch (wsError) {
+      warnings.push(`webscraping retry failed: ${wsError instanceof Error ? wsError.message : String(wsError)}`);
+    }
+    throw markitError;
+  }
 }
 
 function normalizeRemoteTitle(title: string | undefined, preferredTitle: string | undefined): string | undefined {

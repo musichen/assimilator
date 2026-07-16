@@ -16,10 +16,12 @@ export async function exportMemoryCards(workspace: string): Promise<MemoryExport
   const cards: MemoryCard[] = [];
   for (const filePath of metadataFiles.sort()) {
     const metadata = JSON.parse(await fs.readFile(filePath, "utf8")) as SourceMetadata;
-    const content = metadata.summary_short || `${metadata.title} was ingested into ASSIMILATOR.`;
+    const markdownPath = path.join(workspace, metadata.processed_markdown_path);
+    const markdown = await fs.readFile(markdownPath, "utf8").catch(() => "");
+    const content = buildMemoryContent(metadata, markdown);
     cards.push(MemoryCardSchema.parse({
       id: memoryId(metadata.id, 0),
-      type: "insight",
+      type: inferMemoryType(metadata),
       content,
       source_id: metadata.id,
       source_reference: `wiki/articles/${metadata.title}.md`,
@@ -43,4 +45,42 @@ export async function exportMemoryCards(workspace: string): Promise<MemoryExport
   await fs.writeFile(hermesPath, jsonl);
   await fs.writeFile(hindsightPath, jsonl);
   return { cards, jsonlPath, hermesPath, hindsightPath };
+}
+
+function buildMemoryContent(metadata: SourceMetadata, markdown: string): string {
+  const sections = extractSections(markdown, ["Short Summary", "Key Ideas", "Important Facts", "Action Items", "Open Questions"]);
+  const lines = [
+    `${metadata.title} (${metadata.source_type})`,
+    metadata.summary_short ? `Summary: ${metadata.summary_short}` : "",
+    sections.get("Key Ideas") ? `Key ideas:\n${sections.get("Key Ideas")}` : "",
+    sections.get("Important Facts") ? `Facts:\n${sections.get("Important Facts")}` : "",
+    sections.get("Action Items") ? `Actions:\n${sections.get("Action Items")}` : "",
+    sections.get("Open Questions") ? `Questions:\n${sections.get("Open Questions")}` : "",
+    metadata.related_concepts?.length ? `Concepts: ${metadata.related_concepts.slice(0, 12).join(", ")}` : "",
+    `Source: ${metadata.processed_markdown_path}`,
+  ].filter(Boolean);
+  return lines.join("\n\n").slice(0, 4000);
+}
+
+function extractSections(markdown: string, names: string[]): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const name of names) {
+    const pattern = new RegExp(`^##\\s+${escapeRegExp(name)}\\s*$([\\s\\S]*?)(?=^##\\s+|$)`, "im");
+    const match = markdown.match(pattern);
+    const body = match?.[1]?.trim();
+    if (body && !body.includes("None extracted yet") && !body.includes("Needs extraction")) {
+      result.set(name, body.split(/\r?\n/).slice(0, 10).join("\n"));
+    }
+  }
+  return result;
+}
+
+function inferMemoryType(metadata: SourceMetadata): MemoryCard["type"] {
+  if (metadata.tags?.some((tag) => /workflow|process|howto|how-to/i.test(tag))) return "workflow";
+  if (metadata.related_concepts?.some((concept) => /risk|failure|error/i.test(concept))) return "risk";
+  return metadata.source_type === "youtube" || metadata.source_type === "url" ? "insight" : "fact";
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

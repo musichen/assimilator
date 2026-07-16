@@ -40,7 +40,8 @@ function findProjectMarkitdownCommand(): string {
   if (process.env.ASSIMILATOR_MARKITDOWN_BIN) {
     return process.env.ASSIMILATOR_MARKITDOWN_BIN;
   }
-  const projectLocal = path.resolve(".venv", "bin", "markitdown");
+  // Resolve relative to project root (apps/telegram/ -> ../../.venv/)
+  const projectLocal = path.resolve(__dirname, "..", "..", ".venv", "bin", "markitdown");
   if (fs.existsSync(projectLocal)) {
     return projectLocal;
   }

@@ -18,6 +18,8 @@ temp/
 *.log
 logs/
 .DS_Store
+results/
+apps/telegram/results/
 
 # local Python tools
 .venv/

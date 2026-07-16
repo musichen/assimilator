@@ -106,6 +106,8 @@ function conversionCategory(sourceType: string): string {
   switch (sourceType) {
     case "youtube":
       return "youtube";
+    case "linkedin":
+      return "linkedin";
     case "url":
       return "web";
     case "markdown":

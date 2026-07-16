@@ -19,6 +19,15 @@ YouTube URLs
 
 For YouTube, ASSIMILATOR asks `yt-dlp` for metadata so saved outputs use the video title instead of generic names such as `youtube.md`.
 
+LinkedIn URLs
+-> Puppeteer headless Chrome extraction
+-> @assimilator/webscraping multi-tier fallback (HTTP → Stealthy → Dynamic → Chrome)
+
+Difficult sites (Glassdoor, Indeed, Instagram, TikTok, Twitter/X, CrunchBase, PitchBook, ZoomInfo)
+-> @assimilator/webscraping multi-tier fallback
+-> markit-ai
+-> project-local Microsoft markitdown CLI fallback
+
 Generic URLs
 -> markit-ai
 -> project-local Microsoft markitdown CLI fallback

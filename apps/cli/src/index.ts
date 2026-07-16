@@ -18,6 +18,15 @@ import { writeDailyLog } from "./wiki/daily-log.js";
 import { suggestConcepts, suggestLinks } from "./wiki/suggestions.js";
 import { inventoryLibrary } from "./library/inventory.js";
 import { AssimilatorTui } from "./tui/app.js";
+import {
+  webscrapeFetch, webscrapeDetect, webscrapeHealth, webscrapeStats,
+  webscrapeCrawlStart, webscrapeCrawlPause, webscrapeCrawlResume,
+  webscrapeCrawlCancel, webscrapeCrawlStatus, webscrapeCrawlList,
+} from "./core/webscrape.js";
+import {
+  youtubeToMp3, youtubePlaylistToMp3,
+  isYoutubeUrl, isYoutubePlaylistUrl,
+} from "./converters/youtube-mp3.js";
 
 const program = new Command();
 
@@ -392,6 +401,243 @@ program
   });
 
 await program.parseAsync();
+
+// ═══════════════════════════════════════════════════════════════════════
+// Webscrape commands
+// ═══════════════════════════════════════════════════════════════════════
+
+program
+  .command("webscrape-fetch")
+  .argument("<url>", "URL to fetch through the multi-tier chain")
+  .option("--json", "output as JSON")
+  .description("fetch a URL through HTTP→Stealthy→Dynamic→Chrome tier chain")
+  .action(async (url: string, options: { json?: boolean }) => {
+    await runCli(async () => {
+      const result = await webscrapeFetch(url);
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        if (result.success) {
+          console.log(`✅ ${result.tier} tier | ${result.status} | ${result.elapsedMs}ms | ${result.bodyLength} bytes`);
+          if (result.title) console.log(`Title: ${result.title}`);
+          if (result.protection) console.log(`Protection: ${result.protection}`);
+          if (result.snippet) console.log(`\nPreview:\n${result.snippet.slice(0, 300)}`);
+        } else {
+          console.log(`❌ ${result.error}`);
+        }
+      }
+    });
+  });
+
+program
+  .command("webscrape-detect")
+  .argument("<url>", "URL to scan for anti-bot protection")
+  .option("--json", "output as JSON")
+  .description("detect anti-bot/WAF protection on a URL")
+  .action(async (url: string, options: { json?: boolean }) => {
+    await runCli(async () => {
+      const result = await webscrapeDetect(url);
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        if (result.detected) {
+          console.log(`🛡️ ${result.type} (${result.confidence}) — status ${result.status}`);
+        } else {
+          console.log(`✅ No protection detected (status ${result.status})`);
+        }
+      }
+    });
+  });
+
+program
+  .command("webscrape-crawl")
+  .argument("<url>", "seed URL to start crawling from")
+  .option("-d, --depth <n>", "max link depth (default 2)", "2")
+  .option("-p, --pages <n>", "max pages (default 50)", "50")
+  .option("--json", "output as JSON")
+  .description("start a background crawl with pause/resume")
+  .action(async (url: string, options: { depth?: string; pages?: string; json?: boolean }) => {
+    await runCli(async () => {
+      const result = await webscrapeCrawlStart([url], {
+        maxDepth: parseInt(options.depth ?? "2"),
+        maxPages: parseInt(options.pages ?? "50"),
+      });
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`🕷️ ${result.message}`);
+      }
+    });
+  });
+
+program
+  .command("webscrape-crawl-pause")
+  .argument("<crawlId>", "crawl ID to pause")
+  .description("pause a running crawl")
+  .action(async (crawlId: string) => {
+    await runCli(async () => {
+      console.log(await webscrapeCrawlPause(crawlId));
+    });
+  });
+
+program
+  .command("webscrape-crawl-resume")
+  .argument("<crawlId>", "crawl ID to resume")
+  .description("resume a paused crawl")
+  .action(async (crawlId: string) => {
+    await runCli(async () => {
+      console.log(await webscrapeCrawlResume(crawlId));
+    });
+  });
+
+program
+  .command("webscrape-crawl-cancel")
+  .argument("<crawlId>", "crawl ID to cancel")
+  .description("cancel a crawl")
+  .action(async (crawlId: string) => {
+    await runCli(async () => {
+      console.log(await webscrapeCrawlCancel(crawlId));
+    });
+  });
+
+program
+  .command("webscrape-crawl-status")
+  .argument("<crawlId>", "crawl ID")
+  .option("--json", "output as JSON")
+  .description("show crawl state and stats")
+  .action(async (crawlId: string, options: { json?: boolean }) => {
+    await runCli(async () => {
+      const state = await webscrapeCrawlStatus(crawlId);
+      if (!state) {
+        console.log(`Crawl ${crawlId} not found`);
+        return;
+      }
+      if (options.json) {
+        const { results, ...rest } = state;
+        console.log(JSON.stringify({ ...rest, resultCount: results.length }, null, 2));
+      } else {
+        console.log(`🕷️ ${state.id} — ${state.status}`);
+        console.log(`Pages: ${state.stats.pagesCrawled} crawled / ${state.stats.pagesFailed} failed / ${state.queue.length} queued`);
+        console.log(`Bytes: ${state.stats.bytesDownloaded}`);
+        if (state.error) console.log(`Error: ${state.error}`);
+      }
+    });
+  });
+
+program
+  .command("webscrape-crawl-list")
+  .option("--json", "output as JSON")
+  .description("list all crawls")
+  .action(async (options: { json?: boolean }) => {
+    await runCli(async () => {
+      const crawls = await webscrapeCrawlList();
+      if (options.json) {
+        console.log(JSON.stringify(crawls.map(c => ({ id: c.id, status: c.status, stats: c.stats })), null, 2));
+      } else {
+        if (crawls.length === 0) {
+          console.log("No crawls active.");
+          return;
+        }
+        for (const c of crawls) {
+          console.log(`🕷️ ${c.id.slice(0, 8)}  ${c.status.padEnd(12)} ${c.stats.pagesCrawled} pages  ${c.config.startUrls[0]}`);
+        }
+      }
+    });
+  });
+
+program
+  .command("webscrape-health")
+  .option("--json", "output as JSON")
+  .description("check Python Scrapling bridge health")
+  .action(async (options: { json?: boolean }) => {
+    await runCli(async () => {
+      const result = await webscrapeHealth();
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(result.healthy ? "✅" : "❌", result.message);
+      }
+    });
+  });
+
+program
+  .command("webscrape-stats")
+  .option("--json", "output as JSON")
+  .description("show anti-bot protection event statistics")
+  .action(async (options: { json?: boolean }) => {
+    await runCli(async () => {
+      const stats = webscrapeStats();
+      if (options.json) {
+        console.log(JSON.stringify(stats, null, 2));
+      } else {
+        console.log(`🛡️ Protection events: ${stats.totalEvents}`);
+        console.log("\nBy type:");
+        for (const [type, info] of Object.entries(stats.summary)) {
+          console.log(`  ${type}: ${info.count}x (tiers: ${info.tiers.join(", ")})`);
+        }
+        if (stats.recentEvents.length > 0) {
+          console.log("\nRecent:");
+          for (const e of stats.recentEvents.slice(0, 5)) {
+            console.log(`  ${e.detectedAt.slice(11, 19)}  ${e.protection.padEnd(25)} ${e.tier}  ${e.url.slice(0, 60)}`);
+          }
+        }
+      }
+    });
+  });
+
+// ═══════════════════════════════════════════════════════════════════════
+// YouTube → MP3 commands
+// ═══════════════════════════════════════════════════════════════════════
+
+program
+  .command("youtube-to-mp3")
+  .argument("<url>", "YouTube video URL to convert to MP3")
+  .option("-o, --output <dir>", "output directory", "results/mp3")
+  .option("--json", "output as JSON")
+  .description("download a YouTube video, extract audio, and convert to MP3 with metadata")
+  .action(async (url: string, options: { output?: string; json?: boolean }) => {
+    await runCli(async () => {
+      const outDir = path.resolve(options.output ?? "results/mp3");
+      if (!isYoutubeUrl(url)) {
+        throw new Error(`Not a YouTube URL: ${url}`);
+      }
+      const result = await youtubeToMp3(url, outDir, (msg) => process.stderr.write(`${msg}\n`));
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`🎵 ${result.title}`);
+        console.log(`📁 ${result.filePath}`);
+        console.log(`📦 ${(result.size / 1024 / 1024).toFixed(1)} MB`);
+      }
+    });
+  });
+
+program
+  .command("youtube-playlist-to-mp3")
+  .argument("<url>", "YouTube playlist URL to convert all items to MP3")
+  .option("-o, --output <dir>", "output directory", "results/mp3")
+  .option("--json", "output as JSON")
+  .description("download every video in a YouTube playlist, extract audio, and convert to MP3")
+  .action(async (url: string, options: { output?: string; json?: boolean }) => {
+    await runCli(async () => {
+      const outDir = path.resolve(options.output ?? "results/mp3");
+      if (!isYoutubePlaylistUrl(url)) {
+        throw new Error(`Not a YouTube playlist URL: ${url}`);
+      }
+      const result = await youtubePlaylistToMp3(url, outDir, (msg) => process.stderr.write(`${msg}\n`));
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`\n✅ ${result.items.length} converted, ${result.errors.length} failed`);
+        for (const item of result.items) {
+          console.log(`  🎵 ${item.title} (${(item.size / 1024 / 1024).toFixed(1)} MB)`);
+        }
+        for (const err of result.errors) {
+          console.log(`  ❌ ${err.title}: ${err.error}`);
+        }
+      }
+    });
+  });
 
 async function runCli(action: () => Promise<void>): Promise<void> {
   try {

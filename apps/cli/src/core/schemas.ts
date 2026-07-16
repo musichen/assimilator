@@ -3,6 +3,7 @@ import { z } from "zod";
 export const SourceTypeSchema = z.enum([
   "url",
   "youtube",
+  "linkedin",
   "pdf",
   "epub",
   "mobi",
