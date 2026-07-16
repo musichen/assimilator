@@ -255,8 +255,8 @@ describe("Telegram output formatting", () => {
 // ── Integration: fetch real sites through the tier chain ──────────────
 
 describe("Live webscraping integration tests", () => {
-  // These tests hit real websites — skip in CI
-  const LIVE = process.env.CI ? it.skip : it;
+  // These tests hit real websites and can be slow/flaky; run explicitly with ASSIMILATOR_LIVE_TESTS=1.
+  const LIVE = process.env.ASSIMILATOR_LIVE_TESTS === "1" && !process.env.CI ? it : it.skip;
 
   LIVE("fetches example.com via HTTP tier", async () => {
     const result = await webscrapeFetch("https://example.com");
