@@ -135,8 +135,11 @@ console.log("\n═══ Test 4: real YouTube → MP3 (network) ═══");
     ok("file exists and non-empty", res.size > 0, `${res.size} bytes`);
     ok("mp3 is actually an MP3", res.filePath.endsWith(".mp3"));
     ok("progress was reported", progressMsgs.length > 0, `${progressMsgs.length} msgs`);
+    const barMsgs = progressMsgs.filter((m) => m.includes("█") || m.includes("░"));
+    ok("progress BAR messages emitted (the 403-era bug)", barMsgs.length > 0, `${barMsgs.length} bars`);
+    ok("bar reaches 100%", barMsgs.some((m) => m.includes("100.0%")), barMsgs.slice(-1)[0] ?? "none");
     ok("fast enough (< 120s)", secs < 120, `took ${secs.toFixed(1)}s`);
-    console.log(`  ℹ️  ${res.title} | ${(res.size / 1024 / 1024).toFixed(1)} MB | ${secs.toFixed(1)}s`);
+    console.log(`  ℹ️  ${res.title} | ${(res.size / 1024 / 1024).toFixed(1)} MB | ${secs.toFixed(1)}s | ${barMsgs.length} bars`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

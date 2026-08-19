@@ -126,6 +126,30 @@ async function ytdlp(args: string[], opts?: YtDlpOptions): Promise<string> {
  * Run yt-dlp with real-time progress parsing from stderr.
  * Calls onProgress with percentage strings like "▐███▌  42% · 2.1 MiB/s"
  */
+/**
+ * Parse a single "[download] ..." progress line from yt-dlp.
+ * Returns null for non-progress lines.
+ */
+function parseYtDlpProgressLine(line: string): { pct: string; size: string; speed: string; eta: string } | null {
+  // "[download]  42.3% of  3.99MiB at  1.42MiB/s ETA 00:02"
+  // "[download]   0.0% of   19.02MiB at  Unknown B/s ETA Unknown"
+  const m = line.match(/\[download\]\s+([\d.]+%)\s+of\s+(\S+)\s+at\s+(.+?)\s+ETA\s+(\S+)/);
+  if (!m) return null;
+  return {
+    pct: m[1]!,
+    size: m[2]!,
+    speed: m[3]!.replace(/\s+/g, ""),
+    eta: m[4]!,
+  };
+}
+
+/**
+ * Run yt-dlp with real-time progress parsing.
+ *
+ * IMPORTANT: yt-dlp writes the `[download] 42.3% ...` lines to STDOUT (not
+ * stderr) in recent builds. We therefore parse BOTH streams, accumulating
+ * chunks into a line buffer so lines split across chunks still match.
+ */
 async function ytdlpProgress(
   args: string[],
   onProgress?: (msg: string) => void,
@@ -158,29 +182,33 @@ async function ytdlpProgress(
 
     opts?.signal?.addEventListener("abort", cleanup, { once: true });
 
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+    // Parse progress from an accumulated text buffer (handles chunk splits).
+    let lineBuffer = "";
+    const onData = (chunk: Buffer) => {
+      lineBuffer += String(chunk);
+      const lines = lineBuffer.split("\n");
+      lineBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const progress = parseYtDlpProgressLine(line);
+        if (progress) {
+          const { pct, size, speed, eta } = progress;
+          const barLen = 12;
+          const filled = Math.round((parseFloat(pct) / 100) * barLen);
+          const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
+          onProgress?.(`${bar} ${pct.padStart(5)} · ${size} · ${speed} · ETA ${eta}`);
+        }
+        const extractMatch = line.match(/\[ExtractAudio\]\s+Destination:\s*(.+)/);
+        if (extractMatch) {
+          onProgress?.("Converting to MP3...");
+        }
+      }
+    };
+
+    child.stdout.on("data", (chunk) => { stdout += String(chunk); onData(chunk); });
 
     child.stderr.on("data", (chunk) => {
-      const text = String(chunk);
-      stderr += text;
-
-      // Parse download progress: "[download]  42.3% of  3.99MiB at  1.42MiB/s ETA 00:02"
-      const match = text.match(/\[download\]\s+([\d.]+%)\s+of\s+(.+?)\s+at\s+(.+?)(?:\s+ETA\s+(\S+))?/);
-      if (match) {
-        const pct = match[1]!;
-        const size = match[2];
-        const speed = (match[3] ?? "?").replace(/\s+/g, "");
-        const eta = match[4] ?? "?";
-        const barLen = 12;
-        const filled = Math.round((parseFloat(pct) / 100) * barLen);
-        const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
-        onProgress?.(`${bar} ${pct.padStart(5)} · ${speed} · ETA ${eta}`);
-      }
-
-      const extractMatch = text.match(/\[ExtractAudio\]\s+Destination:\s*(.+)/);
-      if (extractMatch) {
-        onProgress?.("Converting to MP3...");
-      }
+      stderr += String(chunk);
+      onData(chunk);
     });
 
     child.on("error", (err) => {
@@ -263,6 +291,7 @@ export async function youtubeToMp3(
   const infoJson = await ytdlp([
     "--dump-json",
     "--skip-download",
+    "--socket-timeout", "30",
     "--extractor-args", "youtube:player_client=android,ios",
     cleanUrl,
   ], { signal });
@@ -287,6 +316,7 @@ export async function youtubeToMp3(
     "--retries", "5",
     "--retry-sleep", "5",
     "--extractor-retries", "5",
+    "--socket-timeout", "30",
     // YouTube blocks the web player client (HTTP 403 on video data).
     // The android client is not blocked and serves a direct mp4/m4a stream.
     "--extractor-args", "youtube:player_client=android,ios",
@@ -324,6 +354,7 @@ export async function youtubePlaylistToMp3(
     "--flat-playlist",
     "--dump-json",
     "--skip-download",
+    "--socket-timeout", "30",
     "--extractor-args", "youtube:player_client=android,ios",
     playlistUrl,
   ], { signal });

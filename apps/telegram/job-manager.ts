@@ -136,7 +136,7 @@ export class JobManager {
       return lines;
     }
     if (running.length > 0) {
-      lines.push(`⚙️ *Running (${running.length}/${this.maxConcurrent}):*`);
+      lines.push(`⚙️ *Running: ${running.length} job(s)* (max ${this.maxConcurrent}):`);
       for (const op of running) {
         const elapsed = formatDuration(Date.now() - op.startedAt);
         lines.push(`  #${op.id} — ${op.description}`);
@@ -144,7 +144,7 @@ export class JobManager {
       }
     }
     if (queued.length > 0) {
-      lines.push(`⏳ *Queued (${queued.length}):*`);
+      lines.push(`⏳ *Queued: ${queued.length} job(s)*:`);
       for (const op of queued) {
         lines.push(`  #${op.id} — ${op.description} (waiting…)`);
       }
