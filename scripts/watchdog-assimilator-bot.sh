@@ -8,11 +8,21 @@ export HOME="/Users/musichen"
 export APP_DIR="$HOME/apps/assimilator"
 export LOG="$HOME/.hermes/logs/assimilator-watchdog.log"
 export PID_FILE="$HOME/.hermes/run/assimilator-bot.pid"
-export PATH="/usr/local/bin:/Users/musichen/.nvm/versions/node/v24.14.0/bin:/opt/homebrew/bin:$PATH"
+export PATH="/Users/musichen/.hermes/node/bin:/Users/musichen/.local/bin:/Users/musichen/.nvm/versions/node/v24.14.0/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # Load env
 source "$APP_DIR/.env" 2>/dev/null || true
 source "$APP_DIR/.env.local" 2>/dev/null || true
+
+# Force IPv4: this network's IPv6 is broken and node's IPv6-first DNS
+# resolution causes EFATAL read ETIMEDOUT in the Telegram long-poll.
+# Note: avoid a leading space when NODE_OPTIONS was previously unset —
+# an empty token breaks node's option parsing.
+if [[ -n "${NODE_OPTIONS:-}" ]]; then
+  export NODE_OPTIONS="${NODE_OPTIONS} --dns-result-order=ipv4first"
+else
+  export NODE_OPTIONS="--dns-result-order=ipv4first"
+fi
 
 ASSIMILATOR_WORKSPACE="${ASSIMILATOR_WORKSPACE:-$HOME/knowledge-system/assimilator}"
 
@@ -54,7 +64,28 @@ while true; do
   BOT_PID=$!
   echo "$BOT_PID" > "$PID_FILE"
 
-  wait "$BOT_PID"
+  # Liveness watchdog: if the bot process is alive but its Telegram polling
+  # loop is dead (EFATAL crash leaves the process running), restart it.
+  # Check every 120s that the bot still responds to Telegram getMe. If not,
+  # kill the zombie so the restart loop kicks in.
+  LIVENESS_INTERVAL=120
+  while kill -0 "$BOT_PID" 2>/dev/null; do
+    sleep "$LIVENESS_INTERVAL"
+    # Bot process gone? Loop exits and wait below reaps the exit code.
+    kill -0 "$BOT_PID" 2>/dev/null || break
+    # Check if bot is alive via Telegram getMe API
+    if ! curl -s --connect-timeout 10 "https://api.telegram.org/bot${BOT_TOKEN}/getMe" | grep -q '"ok":true'; then
+      sleep 10
+      kill -0 "$BOT_PID" 2>/dev/null || break
+      if ! curl -s --connect-timeout 10 "https://api.telegram.org/bot${BOT_TOKEN}/getMe" | grep -q '"ok":true'; then
+        echo "[watchdog][$(date +%H:%M:%S)] Liveness check FAILED — bot not responding, killing zombie"
+        kill -9 "$BOT_PID" 2>/dev/null || true
+        break
+      fi
+    fi
+  done
+
+  wait "$BOT_PID" 2>/dev/null
   exit_code=$?
   rm -f "$PID_FILE"
   echo "[watchdog][$(date +%H:%M:%S)] Bot exited with code $exit_code"

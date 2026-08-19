@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Multi-tier web scraping with Python Scrapling bridge and Puppeteer fallback.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./dist/index.js"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",

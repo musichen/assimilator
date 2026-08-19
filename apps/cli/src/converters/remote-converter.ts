@@ -1,6 +1,7 @@
+import { convertUrlWithDefuddle } from "./defuddle.js";
 import { convertUrlWithMarkitLibrary, type MarkitAdapterResult } from "./markit.js";
 import { convertWithMarkitdownCli } from "./markitdown.js";
-import { convertYoutubeWithYtDlp, isYoutubeUrl, readYoutubeTitle } from "./youtube.js";
+import { convertYoutubeWithYtDlp, isYoutubeUrl, RETRY_YOUTUBE_EXTRACTOR_ARGS, RETRY_YOUTUBE_SUB_LANGS } from "./youtube.js";
 import { isLinkedinUrl, convertLinkedinWithPuppeteer } from "./linkedin.js";
 import { isDifficultSite, convertDifficultSite } from "./webscraping.js";
 
@@ -9,7 +10,7 @@ export interface RemoteConversionResult {
   title?: string;
   sourceType: "url" | "youtube" | "linkedin";
   warnings: string[];
-  converter: "yt-dlp" | "markit-ai" | "markitdown" | "puppeteer" | "webscraping";
+  converter: "yt-dlp" | "defuddle" | "markit-ai" | "markitdown" | "puppeteer" | "webscraping";
 }
 
 export async function convertRemoteToMarkdown(
@@ -20,18 +21,26 @@ export async function convertRemoteToMarkdown(
   const warnings: string[] = [];
   const youtube = isYoutubeUrl(url);
   if (youtube) onProgress?.("YouTube URL detected");
-  const youtubeTitle = youtube ? await readYoutubeTitle(url).catch(() => undefined) : undefined;
-  if (youtubeTitle) onProgress?.(`Video title: ${youtubeTitle}`);
 
   if (youtube) {
-    try {
-      onProgress?.("Trying yt-dlp subtitles/transcript extraction");
-      const result = await convertYoutubeWithYtDlp(url);
-      return { ...result, title: result.title ?? youtubeTitle, sourceType: "youtube", converter: "yt-dlp" };
-    } catch (error) {
-      warnings.push(`yt-dlp failed: ${error instanceof Error ? error.message : String(error)}`);
-      onProgress?.("yt-dlp transcript extraction failed; trying MarkItDown fallback");
+    // Retry with a different client/lang set: identical retries just re-hit the
+    // same YouTube 429 / bot-check that caused the first timeout.
+    let lastYtDlpError: unknown;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        onProgress?.(`Trying yt-dlp subtitles/transcript extraction${attempt > 1 ? " (retry, android/ios + en-only)" : ""}`);
+        const result = await convertYoutubeWithYtDlp(url, attempt === 1 ? {} : {
+          subLangs: RETRY_YOUTUBE_SUB_LANGS,
+          extractorArgs: RETRY_YOUTUBE_EXTRACTOR_ARGS,
+        });
+        return { ...result, sourceType: "youtube", converter: "yt-dlp" };
+      } catch (error) {
+        lastYtDlpError = error;
+        warnings.push(`yt-dlp attempt ${attempt} failed: ${error instanceof Error ? error.message : String(error)}`);
+        onProgress?.(`yt-dlp transcript extraction failed${attempt < 2 ? " — retrying with a different player client" : "; trying MarkItDown fallback"}`);
+      }
     }
+    void lastYtDlpError;
 
     try {
       onProgress?.("Trying Microsoft MarkItDown YouTube fallback");
@@ -39,7 +48,7 @@ export async function convertRemoteToMarkdown(
       assertYoutubeTranscript(fallback.markdown);
       return {
         markdown: fallback.markdown,
-        title: normalizeRemoteTitle(fallback.title, youtubeTitle),
+        title: normalizeRemoteTitle(fallback.title, undefined),
         sourceType: "youtube",
         warnings: [...warnings, ...fallback.warnings],
         converter: "markitdown"
@@ -123,11 +132,26 @@ export async function convertRemoteToMarkdown(
   }
 
   try {
+    onProgress?.("Trying Defuddle reader-mode extraction");
+    const result = await convertUrlWithDefuddle(url);
+    return {
+      markdown: result.markdown,
+      title: normalizeRemoteTitle(result.title, undefined),
+      sourceType: linkedin ? "linkedin" : "url",
+      warnings: [...warnings, ...result.warnings],
+      converter: "defuddle"
+    };
+  } catch (error) {
+    warnings.push(`defuddle failed: ${error instanceof Error ? error.message : String(error)}`);
+    onProgress?.("Defuddle reader-mode extraction failed; trying markit-ai URL conversion");
+  }
+
+  try {
     onProgress?.("Trying markit-ai URL conversion");
     const result: MarkitAdapterResult = await convertUrlWithMarkitLibrary(url);
     return {
       markdown: result.markdown,
-      title: normalizeRemoteTitle(result.title, youtubeTitle),
+      title: normalizeRemoteTitle(result.title, undefined),
       sourceType: linkedin ? "linkedin" : "url",
       warnings: [...warnings, ...result.warnings],
       converter: "markit-ai"

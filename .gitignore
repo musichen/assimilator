@@ -52,3 +52,4 @@ _project_references/
 package-lock.json
 yarn.lock
 bun.lockb
+*.bak-*

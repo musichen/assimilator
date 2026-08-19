@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
@@ -13,6 +14,17 @@ export interface YoutubeConversionResult {
   title?: string;
   warnings: string[];
 }
+
+export interface YoutubeConvertOptions {
+  subLangs?: string;
+  extractorArgs?: string;
+}
+
+/** Official + original captions only. Globs like `en.*` pull every auto-translation and 429 YouTube. */
+export const DEFAULT_YOUTUBE_SUB_LANGS = "en,en-orig,ru,de";
+export const RETRY_YOUTUBE_SUB_LANGS = "en,en-orig";
+export const DEFAULT_YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=web,android";
+export const RETRY_YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=android,ios";
 
 export function isYoutubeUrl(url: string): boolean {
   try {
@@ -35,29 +47,75 @@ function resolveYtDlpCommand(): string {
   }
 }
 
-export async function convertYoutubeWithYtDlp(url: string): Promise<YoutubeConversionResult> {
+export function buildYoutubeSubtitleArgs(
+  url: string,
+  outputTemplate: string,
+  options: YoutubeConvertOptions = {},
+): string[] {
+  const subLangs = options.subLangs
+    || process.env.ASSIMILATOR_YOUTUBE_SUB_LANGS
+    || DEFAULT_YOUTUBE_SUB_LANGS;
+  const extractorArgs = options.extractorArgs
+    || process.env.ASSIMILATOR_YOUTUBE_EXTRACTOR_ARGS
+    || DEFAULT_YOUTUBE_EXTRACTOR_ARGS;
+  return [
+    "--skip-download",
+    "--no-playlist",
+    "--write-subs",
+    "--write-auto-subs",
+    "--sub-langs",
+    subLangs,
+    "--ignore-errors",
+    "--sub-format",
+    "vtt",
+    "--retries",
+    "1",
+    "--socket-timeout",
+    "20",
+    "--extractor-args",
+    extractorArgs,
+    "-o",
+    outputTemplate,
+    url,
+  ];
+}
+
+export function resolveYtDlpEnv(): NodeJS.ProcessEnv {
+  const venvBin = resolveAssimilatorVenvBin();
+  const currentPath = process.env.PATH || "";
+  if (!venvBin) return { ...process.env };
+  const parts = currentPath.split(path.delimiter);
+  if (parts.includes(venvBin)) return { ...process.env };
+  return {
+    ...process.env,
+    PATH: `${venvBin}${path.delimiter}${currentPath}`,
+  };
+}
+
+export async function convertYoutubeWithYtDlp(
+  url: string,
+  options: YoutubeConvertOptions = {},
+): Promise<YoutubeConversionResult> {
   const command = resolveYtDlpCommand();
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "assimilator-youtube-"));
   const outputTemplate = path.join(tempDir, "%(id)s.%(ext)s");
-  const metadata = await readYoutubeMetadata(command, url);
   const warnings: string[] = [];
 
+  // Metadata probe: bounded timeout so a hanging YouTube bot-check can't
+  // stall the whole conversion indefinitely.
+  let metadata: { title?: string; uploader?: string; duration?: number } = {};
   try {
-    await run(command, [
-      "--skip-download",
-      "--write-subs",
-      "--write-auto-subs",
-      "--sub-langs",
-      process.env.ASSIMILATOR_YOUTUBE_SUB_LANGS || "en.*,en,ru.*,ru,de.*,de",
-      "--ignore-errors",
-      "--sub-format",
-      "vtt",
-      "-o",
-      outputTemplate,
-      url
-    ], { timeoutMs: 2 * 60_000 });
+    metadata = await readYoutubeMetadata(command, url);
+  } catch (error) {
+    warnings.push(`yt-dlp metadata probe failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
-    const subtitle = await findFirstFile(tempDir, (entry) => entry.endsWith(".vtt"));
+  try {
+    await run(command, buildYoutubeSubtitleArgs(url, outputTemplate, options), {
+      timeoutMs: youtubeSubtitlesTimeoutMs(),
+    });
+
+    const subtitle = await findPreferredSubtitle(tempDir);
     let transcript = "";
     let transcriptSource = "yt-dlp subtitles";
 
@@ -131,7 +189,7 @@ export function vttToText(vtt: string): string {
 }
 
 async function readYoutubeMetadata(command: string, url: string): Promise<{ title?: string; uploader?: string; duration?: number }> {
-  const stdout = await run(command, ["--dump-json", "--skip-download", url]);
+  const stdout = await run(command, ["--dump-json", "--skip-download", url], { timeoutMs: youtubeMetadataTimeoutMs() });
   const firstLine = stdout.split(/\r?\n/).find(Boolean);
   if (!firstLine) return {};
   const raw = JSON.parse(firstLine) as { title?: string; uploader?: string; duration?: number };
@@ -182,12 +240,37 @@ async function transcribeYoutubeAudio(ytdlpCommand: string, url: string, tempDir
   }
 }
 
+function resolveAssimilatorVenvBin(): string | undefined {
+  if (process.env.ASSIMILATOR_VENV_BIN && existsSync(process.env.ASSIMILATOR_VENV_BIN)) {
+    return process.env.ASSIMILATOR_VENV_BIN;
+  }
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(here, "../../../../.venv/bin"),
+    path.resolve(process.cwd(), ".venv/bin"),
+    path.join(os.homedir(), "apps/assimilator/.venv/bin"),
+  ];
+  return candidates.find((dir) => existsSync(path.join(dir, "python")));
+}
+
 function resolveWhisperCommand(): string {
   if (process.env.ASSIMILATOR_WHISPER_BIN) return process.env.ASSIMILATOR_WHISPER_BIN;
   for (const candidate of ["/opt/homebrew/bin/whisper", "/usr/local/bin/whisper", "whisper"]) {
     if (candidate === "whisper" || existsSync(candidate)) return candidate;
   }
   return "whisper";
+}
+
+export function pickPreferredSubtitle(entries: string[]): string | undefined {
+  const vtts = entries.filter((entry) => entry.endsWith(".vtt"));
+  return vtts.find((entry) => /\.en-orig\.vtt$/i.test(entry))
+    || vtts.find((entry) => /\.en\.vtt$/i.test(entry))
+    || vtts[0];
+}
+
+async function findPreferredSubtitle(dir: string): Promise<string | undefined> {
+  const match = pickPreferredSubtitle(await fs.readdir(dir));
+  return match ? path.join(dir, match) : undefined;
 }
 
 async function findFirstFile(dir: string, predicate: (entry: string) => boolean): Promise<string | undefined> {
@@ -198,6 +281,14 @@ async function findFirstFile(dir: string, predicate: (entry: string) => boolean)
 
 function youtubeAudioDownloadTimeoutMs(): number {
   return parsePositiveInt(process.env.ASSIMILATOR_YOUTUBE_AUDIO_TIMEOUT_MS, 10 * 60_000);
+}
+
+function youtubeSubtitlesTimeoutMs(): number {
+  return parsePositiveInt(process.env.ASSIMILATOR_YOUTUBE_SUBTITLES_TIMEOUT_MS, 3 * 60_000);
+}
+
+function youtubeMetadataTimeoutMs(): number {
+  return parsePositiveInt(process.env.ASSIMILATOR_YOUTUBE_METADATA_TIMEOUT_MS, 45_000);
 }
 
 function youtubeWhisperTimeoutMs(): number {
@@ -212,7 +303,7 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 
 async function run(command: string, args: string[], options: { timeoutMs?: number } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: resolveYtDlpEnv() });
     let stdout = "";
     let stderr = "";
     let settled = false;

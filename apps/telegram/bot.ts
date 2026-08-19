@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import TelegramBot from "node-telegram-bot-api";
+import { JobManager, formatDuration, type ActiveOperation } from "./job-manager.js";
 import { initWorkspace } from "../cli/src/core/workspace.js";
 import { ingestFile, ingestFolder, ingestUrl, processInbox } from "../cli/src/core/ingest.js";
 import { resolveWorkspace } from "../cli/src/core/paths.js";
@@ -92,14 +93,6 @@ async function retainInHindsight(filePath: string, metadata: { id?: string; titl
   }
 }
 
-function formatDuration(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const rs = s % 60;
-  return rs > 0 ? `${m}m ${rs}s` : `${m}m`;
-}
-
 const bot = new TelegramBot(token, {
   polling: {
     params: {
@@ -117,34 +110,8 @@ const bot = new TelegramBot(token, {
 });
 
 // ── Active operation tracking (for /stop) ──────────────────────────
-
-interface ActiveOperation {
-  controller: AbortController;
-  description: string;
-  outputDirs: string[];     // directories whose new files to clean up on abort
-  startedAt: number;        // Date.now() — to identify files created during this op
-}
-
-let currentOp: ActiveOperation | null = null;
-
-function trackOperation(description: string, ...outputDirs: string[]): { signal: AbortSignal } {
-  // Abort previous op if still running
-  if (currentOp) {
-    currentOp.controller.abort();
-  }
-  const controller = new AbortController();
-  currentOp = {
-    controller,
-    description,
-    outputDirs,
-    startedAt: Date.now(),
-  };
-  return { signal: controller.signal };
-}
-
-function clearOperation() {
-  currentOp = null;
-}
+// JobManager lives in ./job-manager.ts (imported above) — pure, testable.
+const jobManager = new JobManager();
 
 async function cleanupOperation(op: ActiveOperation, chatId: number): Promise<string[]> {
   const deleted: string[] = [];
@@ -203,21 +170,27 @@ async function runTracked<T>(
   chatId: number,
   description: string,
   outputDirs: string[],
-  action: (signal: AbortSignal) => Promise<T>,
+  action: (signal: AbortSignal, onProgress?: (msg: string) => void) => Promise<T>,
 ): Promise<T | undefined> {
-  const { signal } = trackOperation(description, ...outputDirs);
-  try {
-    return await action(signal);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg === "ABORTED") {
-      await bot.sendMessage(chatId, `🛑 Aborted: ${description}`).catch(() => undefined);
-      return undefined;
+  let result: T | undefined;
+  let opError: unknown;
+
+  const op = jobManager.submit(chatId, description, outputDirs, async (signal, onProgress) => {
+    try {
+      result = await action(signal, onProgress);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === "ABORTED") {
+        await bot.sendMessage(chatId, `🛑 Aborted: ${description}`).catch(() => undefined);
+      } else {
+        opError = err;
+      }
     }
-    throw err;
-  } finally {
-    if (!signal.aborted) clearOperation();
-  }
+  });
+
+  await jobManager.awaitCompletion(op);
+  if (opError !== undefined) throw opError;
+  return result;
 }
 await registerCommands();
 
@@ -239,19 +212,23 @@ bot.onText(/^\/help\b/, async (message) => {
   await bot.sendMessage(message.chat.id, helpText(), { parse_mode: "Markdown" });
 });
 
-bot.onText(/^\/stop\b/, async (message) => {
-  if (!currentOp) {
+bot.onText(/^\/stop(?:\s+(\d+))?\b/, async (message, match) => {
+  const targetId = match?.[1] ? Number.parseInt(match[1], 10) : undefined;
+
+  const active = jobManager.activeList();
+  if (active.length === 0) {
     await bot.sendMessage(message.chat.id, "No operation running.");
     return;
   }
-  const op = currentOp;
-  op.controller.abort();
-  currentOp = null;
 
-  await bot.sendMessage(message.chat.id, `🛑 Aborting: ${op.description}...`);
-
-  // Clean up residual files
-  try {
+  // /stop <id> — abort one specific job
+  if (targetId !== undefined) {
+    const op = jobManager.abort(targetId);
+    if (!op) {
+      await bot.sendMessage(message.chat.id, `No active job #${targetId}. Active: ${active.map(o => `#${o.id}`).join(", ") || "none"}`);
+      return;
+    }
+    await bot.sendMessage(message.chat.id, `🛑 Aborting job #${op.id}: ${op.description}...`);
     const deleted = await cleanupOperation(op, message.chat.id);
     const lines = [`✅ *Stopped*: ${op.description}`];
     if (deleted.length > 0) {
@@ -259,9 +236,23 @@ bot.onText(/^\/stop\b/, async (message) => {
       lines.push(deleted.slice(0, 20).map(f => `  • ${f}`).join("\n"));
       if (deleted.length > 20) lines.push(`  ...and ${deleted.length - 20} more`);
     }
-    await bot.sendMessage(message.chat.id, lines.join("\n"), { parse_mode: "Markdown" });
-  } catch {
-    await bot.sendMessage(message.chat.id, `🛑 Stopped: ${op.description} (cleanup failed)`);
+    await bot.sendMessage(message.chat.id, lines.join("\n"), { parse_mode: "Markdown" }).catch(() => undefined);
+    return;
+  }
+
+  // /stop — abort ALL running + queued jobs
+  const aborted = jobManager.abortAll();
+  const descriptions = aborted.map(o => `#${o.id} ${o.description}`).join("\n  ");
+  await bot.sendMessage(message.chat.id, `🛑 Aborting ${aborted.length} job(s):\n  ${descriptions}`);
+  for (const op of aborted) {
+    try {
+      const deleted = await cleanupOperation(op, message.chat.id);
+      if (deleted.length > 0) {
+        await bot.sendMessage(message.chat.id, `🧹 #${op.id}: cleaned ${deleted.length} file(s)`).catch(() => undefined);
+      }
+    } catch {
+      // cleanup best-effort
+    }
   }
 });
 
@@ -286,7 +277,14 @@ bot.onText(/^\/status\b/, async (message) => {
   await withChatError(message.chat.id, async () => {
     const status = await getWorkspaceStatus(workspace);
     const counts = Object.entries(status.counts).map(([key, value]) => `- ${key}: ${value}`).join("\n");
-    await bot.sendMessage(message.chat.id, [`Workspace: ${workspace}`, `Initialized: ${status.initialized ? "yes" : "no"}`, counts].join("\n"));
+    const jobLines = jobManager.statusLines();
+    await bot.sendMessage(message.chat.id, [
+      ...jobLines,
+      "",
+      `Workspace: ${workspace}`,
+      `Initialized: ${status.initialized ? "yes" : "no"}`,
+      counts,
+    ].join("\n"), { parse_mode: "Markdown" });
   });
 });
 
@@ -611,9 +609,14 @@ const TELEGRAM_AUDIO_LIMIT_BYTES = Number(process.env.ASSIMILATOR_TELEGRAM_AUDIO
 
 /** Parse --setArtist "Name" or --setArtist Name from command text. Returns artist name or null. */
 function parseArtistFlag(text: string): { artist: string | null; rest: string } {
-  const match = text.match(/--setArtist\s+(?:"([^"]+)"|(\S+))/i);
+  // Accepts: --setArtist "Name", --author "Name", -author "Name",
+  // and the em-dash variant —author "Name" (U+2014), which users type on mac/ru keyboards.
+  // Quotes may be straight ("), curly (“”), or guillemets («»).
+  const match = text.match(
+    /(?:--?setArtist|--?author|—author|–author)\s+(?:"([^"]*)"|“([^”]*)”|«([^»]*)»|([^\s]+))/i,
+  );
   if (match) {
-    const artist = match[1] ?? match[2] ?? null;
+    const artist = match[1] ?? match[2] ?? match[3] ?? match[4] ?? null;
     const rest = text.replace(match[0], "").trim();
     return { artist, rest };
   }
@@ -705,7 +708,7 @@ function formatLocalMp3Notice(item: YoutubeMp3Result): string {
 bot.onText(/^\/youtube_to_mp3(?:\s+([\s\S]+))?/, async (message, match) => {
   const raw = match?.[1]?.trim();
   if (!raw) {
-    await bot.sendMessage(message.chat.id, "Send `/youtube_to_mp3 <url> [--setArtist \"Name\"]`.", { parse_mode: "Markdown" });
+    await bot.sendMessage(message.chat.id, "Send `/youtube_to_mp3 <url> [--author \"Name\"]`.\n\nSets the MP3's artist/performer tag. Aliases: `--author`, `--setArtist`, `—author` (em-dash).", { parse_mode: "Markdown" });
     return;
   }
   const { artist, rest } = parseArtistFlag(raw);
@@ -722,8 +725,9 @@ bot.onText(/^\/youtube_to_mp3(?:\s+([\s\S]+))?/, async (message, match) => {
   const status = await bot.sendMessage(message.chat.id, `🎬 *YouTube → MP3*\\n🔍 Analyzing video...`, { parse_mode: "Markdown" });
   let lastUpdate = 0;
 
-  await runTracked(message.chat.id, `YouTube → MP3: ${url.slice(0, 80)}`, [mp3OutputDir], async (signal) => {
+  await runTracked(message.chat.id, `YouTube → MP3: ${url.slice(0, 80)}`, [mp3OutputDir], async (signal, onProgress) => {
     const result = await youtubeToMp3(url, mp3OutputDir, (msg) => {
+      onProgress?.(msg);
       const now = Date.now();
       if (now - lastUpdate > 1000) {
         lastUpdate = now;
@@ -772,7 +776,7 @@ bot.onText(/^\/youtube_to_mp3(?:\s+([\s\S]+))?/, async (message, match) => {
 bot.onText(/^\/youtube_playlist_to_mp3(?:\s+([\s\S]+))?/, async (message, match) => {
   const raw = match?.[1]?.trim();
   if (!raw) {
-    await bot.sendMessage(message.chat.id, "Send `/youtube_playlist_to_mp3 <url> [--setArtist \"Name\"]`.", { parse_mode: "Markdown" });
+    await bot.sendMessage(message.chat.id, "Send `/youtube_playlist_to_mp3 <url> [--author \"Name\"]`.\n\nSets the MP3's artist/performer tag. Aliases: `--author`, `--setArtist`, `—author` (em-dash).", { parse_mode: "Markdown" });
     return;
   }
   const { artist, rest } = parseArtistFlag(raw);
@@ -884,19 +888,21 @@ async function convertUrlForChat(chatId: number, url: string): Promise<void> {
   logAction({ ts: new Date().toISOString(), action: "convert_url", source: url, status: "started" });
 
   const processedDir = path.join(workspace, "processed");
-  await runTracked(chatId, `Convert URL: ${url.slice(0, 80)}`, [processedDir, tempRoot], async (signal) => {
+  await runTracked(chatId, `Convert URL: ${url.slice(0, 80)}`, [processedDir, tempRoot], async (signal, onProgress) => {
     if (signal.aborted) throw new Error("ABORTED");
 
     const progress = await bot.sendMessage(chatId, `⏳ Converting URL...\n${url.slice(0, 100)}`);
     const startMsgId = progress.message_id;
 
-    // Progress heartbeat: update elapsed time every 3 seconds
+    // Progress heartbeat: update elapsed time + phase every 3 seconds
     const heartbeat = setInterval(() => {
+      onProgress?.(`Converting... (${formatDuration(Date.now() - startTime)})`);
       void bot.editMessageText(`⏳ Converting... (${formatDuration(Date.now() - startTime)})\nFetching page content…`, {
         chat_id: chatId, message_id: startMsgId,
       }).catch(() => undefined);
     }, 3000);
 
+    onProgress?.("Fetching page content…");
     const result = await ingestUrl(workspace, url, { tags: ["telegram-bot"] });
     clearInterval(heartbeat);
     if (signal.aborted) throw new Error("ABORTED");
@@ -904,11 +910,13 @@ async function convertUrlForChat(chatId: number, url: string): Promise<void> {
     const title = result.metadata.title;
     const duration = formatDuration(Date.now() - startTime);
 
+    onProgress?.("Extracted → running wiki index…");
     await bot.editMessageText(`📝 Extracted → running wiki index…`, {
       chat_id: chatId, message_id: startMsgId,
     });
     updateWikiIndexes(workspace).catch(() => undefined);
 
+    onProgress?.("Retaining in Hindsight…");
     const hindsight = await retainInHindsight(result.processedMarkdownPath, {
       id: result.metadata.id,
       title: result.metadata.title,
@@ -1024,9 +1032,21 @@ async function ingestTelegramLocalFile(
 }
 
 async function sendExistingDocument(chatId: number, filePath: string): Promise<void> {
-  await bot.sendDocument(chatId, fs.createReadStream(filePath), {}, {
-    filename: path.basename(filePath)
-  });
+  try {
+    await bot.sendDocument(chatId, fs.createReadStream(filePath), {}, {
+      filename: path.basename(filePath)
+    });
+  } catch (error) {
+    if (isTelegramTooLargeError(error) || (errorToSearchableText(error).includes("file is too big"))) {
+      const sizeMb = (fs.statSync(filePath).size / (1024 * 1024)).toFixed(1);
+      await bot.sendMessage(
+        chatId,
+        `⚠️ File too large for Telegram (${sizeMb} MB > 50 MB limit):\n${path.basename(filePath)}\nIt's still saved locally in the workspace.`
+      ).catch(() => undefined);
+      return;
+    }
+    throw error;
+  }
 }
 
 async function withChatError(chatId: number, action: () => Promise<void>): Promise<void> {

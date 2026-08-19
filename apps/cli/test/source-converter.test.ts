@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { convertLocalFileToMarkdown } from "../src/converters/source-converter.js";
-import { isYoutubeUrl, vttToText } from "../src/converters/youtube.js";
+import { isYoutubeUrl, vttToText, buildYoutubeSubtitleArgs, pickPreferredSubtitle, DEFAULT_YOUTUBE_SUB_LANGS } from "../src/converters/youtube.js";
 
 describe("source converter", () => {
   it("uses local conversion for Markdown and Showdown HTML import", async () => {
@@ -61,5 +61,23 @@ describe("source converter", () => {
 
   it("recognizes escaped YouTube watch URLs after shell-style backslashes are removed by conversion layer", () => {
     expect(isYoutubeUrl("https://www.youtube.com/watch?v=abc123")).toBe(true);
+  });
+
+  it("does not request every auto-translated subtitle variant", () => {
+    const args = buildYoutubeSubtitleArgs("https://www.youtube.com/watch?v=abc123", "/tmp/out.%(ext)s");
+    const langs = args[args.indexOf("--sub-langs") + 1];
+    expect(langs).toBe(DEFAULT_YOUTUBE_SUB_LANGS);
+    expect(langs).not.toContain(".*");
+    expect(args).toContain("--socket-timeout");
+    expect(args).toContain("--extractor-args");
+    expect(args).toContain("--no-playlist");
+  });
+
+  it("prefers original English captions over translations", () => {
+    expect(pickPreferredSubtitle([
+      "5FcHP22u0zs.ru-en.vtt",
+      "5FcHP22u0zs.en.vtt",
+      "5FcHP22u0zs.en-orig.vtt",
+    ])).toBe("5FcHP22u0zs.en-orig.vtt");
   });
 });

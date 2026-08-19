@@ -70,6 +70,7 @@ export function isYoutubePlaylistUrl(url: string): boolean {
 
 export interface YtDlpOptions {
   signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 /** Run yt-dlp and return stdout as string. */
@@ -80,9 +81,20 @@ async function ytdlp(args: string[], opts?: YtDlpOptions): Promise<string> {
     let stderr = "";
     let settled = false;
 
+    const timeoutMs = opts?.timeoutMs ?? ytDlpDownloadTimeoutMs();
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        child.kill("SIGTERM");
+        setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 3000);
+        reject(new Error(`yt-dlp timed out after ${Math.round(timeoutMs / 1000)}s`));
+      }
+    }, timeoutMs);
+
     const cleanup = () => {
       if (!settled) {
         settled = true;
+        clearTimeout(timer);
         child.kill("SIGTERM");
         setTimeout(() => { if (!child.killed) child.kill("SIGKILL"); }, 3000);
       }
@@ -95,12 +107,14 @@ async function ytdlp(args: string[], opts?: YtDlpOptions): Promise<string> {
     child.on("error", (err) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       if (opts?.signal?.aborted) reject(new Error("ABORTED"));
       else reject(new Error(`yt-dlp: ${err.message}`));
     });
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       if (opts?.signal?.aborted) reject(new Error("ABORTED"));
       else if (code === 0) resolve(stdout);
       else reject(new Error(stderr.trim() || `yt-dlp exited ${code}`));
@@ -123,9 +137,20 @@ async function ytdlpProgress(
     let stderr = "";
     let settled = false;
 
+    const timeoutMs = opts?.timeoutMs ?? ytDlpDownloadTimeoutMs();
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        child.kill("SIGTERM");
+        setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 3000);
+        reject(new Error(`yt-dlp timed out after ${Math.round(timeoutMs / 1000)}s`));
+      }
+    }, timeoutMs);
+
     const cleanup = () => {
       if (!settled) {
         settled = true;
+        clearTimeout(timer);
         child.kill("SIGTERM");
         setTimeout(() => { if (!child.killed) child.kill("SIGKILL"); }, 3000);
       }
@@ -161,17 +186,33 @@ async function ytdlpProgress(
     child.on("error", (err) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       if (opts?.signal?.aborted) reject(new Error("ABORTED"));
       else reject(new Error(`yt-dlp: ${err.message}`));
     });
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       if (opts?.signal?.aborted) reject(new Error("ABORTED"));
       else if (code === 0) resolve(stdout);
       else reject(new Error(stderr.trim() || `yt-dlp exited ${code}`));
     });
   });
+}
+
+function playlistTrackDelayMs(): number {
+  const raw = Number.parseInt(process.env.ASSIMILATOR_PLAYLIST_TRACK_DELAY_MS ?? "", 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 8_000;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function ytDlpDownloadTimeoutMs(): number {
+  const raw = Number.parseInt(process.env.ASSIMILATOR_YOUTUBE_MP3_TIMEOUT_MS ?? "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 8 * 60_000;
 }
 
 function safeFilename(title: string): string {
@@ -216,7 +257,15 @@ export async function youtubeToMp3(
   const cleanUrl = cleanVideoUrl(url);
 
   onProgress?.("🔍 Fetching video info...");
-  const infoJson = await ytdlp(["--dump-json", "--skip-download", cleanUrl], { signal });
+  // IMPORTANT: the metadata fetch must use the same non-blocked player client.
+  // The default web client gets 403/rate-limited by YouTube and can hang for
+  // the full timeout; android/ios clients are not blocked.
+  const infoJson = await ytdlp([
+    "--dump-json",
+    "--skip-download",
+    "--extractor-args", "youtube:player_client=android,ios",
+    cleanUrl,
+  ], { signal });
   const info = JSON.parse(infoJson.split(/\r?\n/).find(Boolean) ?? "{}") as {
     title?: string;
     uploader?: string;
@@ -235,6 +284,12 @@ export async function youtubeToMp3(
     "-x",
     "--audio-format", "mp3",
     "--audio-quality", DEFAULT_MP3_AUDIO_QUALITY,
+    "--retries", "5",
+    "--retry-sleep", "5",
+    "--extractor-retries", "5",
+    // YouTube blocks the web player client (HTTP 403 on video data).
+    // The android client is not blocked and serves a direct mp4/m4a stream.
+    "--extractor-args", "youtube:player_client=android,ios",
     "--add-metadata",
     "--embed-thumbnail",
     "--newline",
@@ -269,6 +324,7 @@ export async function youtubePlaylistToMp3(
     "--flat-playlist",
     "--dump-json",
     "--skip-download",
+    "--extractor-args", "youtube:player_client=android,ios",
     playlistUrl,
   ], { signal });
 
@@ -302,6 +358,13 @@ export async function youtubePlaylistToMp3(
       const msg = err instanceof Error ? err.message : String(err);
       errors.push({ title: label, error: msg });
       onProgress?.(`[${idx}/${entries.length}] ❌ ${label} — ${msg}`);
+    }
+
+    // Rate-limit protection: YouTube 403s rapid back-to-back downloads.
+    if (idx < entries.length && !signal?.aborted) {
+      const delayMs = playlistTrackDelayMs();
+      onProgress?.(`⏳ ${Math.round(delayMs / 1000)}s pause before next track...`);
+      await sleep(delayMs);
     }
   }
 

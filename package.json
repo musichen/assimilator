@@ -29,6 +29,7 @@
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.2",
     "cors": "^2.8.6",
+    "defuddle": "^0.19.2",
     "express": "^5.2.1",
     "markit-ai": "^0.5.3",
     "multer": "^2.1.1",
