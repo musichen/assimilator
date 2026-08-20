@@ -61,6 +61,7 @@ export function buildYoutubeSubtitleArgs(
   return [
     "--skip-download",
     "--no-playlist",
+    "--force-ipv4",
     "--write-subs",
     "--write-auto-subs",
     "--sub-langs",

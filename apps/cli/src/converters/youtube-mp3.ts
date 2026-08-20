@@ -27,6 +27,8 @@ const YTDLP = resolveYtDlpCommand();
 const DEFAULT_MP3_AUDIO_QUALITY = process.env.ASSIMILATOR_MP3_AUDIO_QUALITY ?? "64K";
 export const YOUTUBE_MP3_PLAYER_CLIENTS = "android,ios,tv,mweb";
 export const YOUTUBE_METADATA_TIMEOUT_MS = 25_000;
+export const YOUTUBE_DOWNLOAD_STALL_MS = 45_000;
+export const YOUTUBE_DOWNLOAD_TIMEOUT_MS = 180_000;
 
 function resolveYtDlpCommand(): string {
   if (process.env.ASSIMILATOR_YTDLP_BIN) return process.env.ASSIMILATOR_YTDLP_BIN;
@@ -94,8 +96,9 @@ export function cleanVideoUrl(url: string): string {
 function commonYoutubeArgs(): string[] {
   return [
     "--no-playlist",
-    "--socket-timeout", "20",
-    "--retries", "2",
+    "--force-ipv4",
+    "--socket-timeout", "15",
+    "--retries", "1",
     "--extractor-args", `youtube:player_client=${YOUTUBE_MP3_PLAYER_CLIENTS}`,
   ];
 }
@@ -168,7 +171,7 @@ function spawnYtDlp(
         clearInterval(heartbeat);
         child.kill("SIGTERM");
         setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 3000);
-        reject(new Error(`yt-dlp timed out after ${Math.round(timeoutMs / 1000)}s`));
+        reject(new Error(`yt-dlp timed out after ${Math.round(timeoutMs / 1000)}s${stderr ? `: ${stderr.trim().split(/\n/).slice(-4).join(" | ")}` : ""}`));
       }
     }, timeoutMs);
 
@@ -243,7 +246,7 @@ function sleep(ms: number): Promise<void> {
 
 function ytDlpDownloadTimeoutMs(): number {
   const raw = Number.parseInt(process.env.ASSIMILATOR_YOUTUBE_MP3_TIMEOUT_MS ?? "", 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : 8 * 60_000;
+  return Number.isFinite(raw) && raw > 0 ? raw : YOUTUBE_DOWNLOAD_TIMEOUT_MS;
 }
 
 function safeFilename(title: string): string {
