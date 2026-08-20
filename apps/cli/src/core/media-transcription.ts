@@ -66,7 +66,10 @@ async function transcribeWithWhisper(filePath: string, outputDir: string): Promi
 
 function execFileText(command: string, args: string[], timeout: number): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
   return new Promise((resolve) => {
-    execFile(command, args, { timeout }, (error, stdout, stderr) => {
+    // maxBuffer: whisper's tqdm progress bar floods stderr; the default 1MB
+    // cap kills the process mid-transcription with an unhelpful
+    // "maxBuffer exceeded" error that surfaces as "whisper failed".
+    execFile(command, args, { timeout, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({
         stdout: String(stdout ?? ""),
         stderr: String(stderr ?? error?.message ?? ""),
