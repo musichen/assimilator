@@ -23,8 +23,8 @@ export interface YoutubeConvertOptions {
 /** Official + original captions only. Globs like `en.*` pull every auto-translation and 429 YouTube. */
 export const DEFAULT_YOUTUBE_SUB_LANGS = "en,en-orig,ru,de";
 export const RETRY_YOUTUBE_SUB_LANGS = "en,en-orig";
-export const DEFAULT_YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=web,android";
-export const RETRY_YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=android,ios";
+export const DEFAULT_YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=tv,web_embedded";
+export const RETRY_YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=tv,web";
 
 export function isYoutubeUrl(url: string): boolean {
   try {
@@ -36,7 +36,14 @@ export function isYoutubeUrl(url: string): boolean {
 }
 
 function resolveYtDlpCommand(): string {
-  if (process.env.ASSIMILATOR_YTDLP_BIN) return process.env.ASSIMILATOR_YTDLP_BIN;
+  if (process.env.ASSIMILATOR_YTDLP_BIN && existsSync(process.env.ASSIMILATOR_YTDLP_BIN)) {
+    return process.env.ASSIMILATOR_YTDLP_BIN;
+  }
+  const pinned = [
+    path.join(os.homedir(), "apps/assimilator/bin/yt-dlp"),
+    path.resolve(process.cwd(), "bin/yt-dlp"),
+  ].find((p) => existsSync(p));
+  if (pinned) return pinned;
   try {
     return require.resolve("yt-dlp-exec/bin/yt-dlp");
   } catch {
@@ -73,6 +80,8 @@ export function buildYoutubeSubtitleArgs(
     "1",
     "--socket-timeout",
     "20",
+    "--js-runtimes",
+    "node",
     "--extractor-args",
     extractorArgs,
     "-o",

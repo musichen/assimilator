@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { resolveYtDlpEnv } from "./youtube.js";
 
@@ -25,13 +26,20 @@ export interface YtDlpOptions {
 
 const YTDLP = resolveYtDlpCommand();
 const DEFAULT_MP3_AUDIO_QUALITY = process.env.ASSIMILATOR_MP3_AUDIO_QUALITY ?? "64K";
-export const YOUTUBE_MP3_PLAYER_CLIENTS = "android,ios,tv,mweb";
+export const YOUTUBE_MP3_PLAYER_CLIENTS = "tv,web_embedded";
 export const YOUTUBE_METADATA_TIMEOUT_MS = 25_000;
 export const YOUTUBE_DOWNLOAD_STALL_MS = 45_000;
 export const YOUTUBE_DOWNLOAD_TIMEOUT_MS = 180_000;
 
 function resolveYtDlpCommand(): string {
-  if (process.env.ASSIMILATOR_YTDLP_BIN) return process.env.ASSIMILATOR_YTDLP_BIN;
+  if (process.env.ASSIMILATOR_YTDLP_BIN && existsSync(process.env.ASSIMILATOR_YTDLP_BIN)) {
+    return process.env.ASSIMILATOR_YTDLP_BIN;
+  }
+  const pinned = [
+    path.join(os.homedir(), "apps/assimilator/bin/yt-dlp"),
+    path.resolve(process.cwd(), "bin/yt-dlp"),
+  ].find((p) => existsSync(p));
+  if (pinned) return pinned;
   try {
     return require.resolve("yt-dlp-exec/bin/yt-dlp");
   } catch {
@@ -99,6 +107,7 @@ function commonYoutubeArgs(): string[] {
     "--force-ipv4",
     "--socket-timeout", "15",
     "--retries", "1",
+    "--js-runtimes", "node",
     "--extractor-args", `youtube:player_client=${YOUTUBE_MP3_PLAYER_CLIENTS}`,
   ];
 }
@@ -297,8 +306,7 @@ export async function youtubeToMp3(
   if (filePath !== stagedPath) await fs.rm(filePath, { force: true });
 
   const outputTemplate = path.join(outputDir, `${videoId}.%(ext)s`);
-  onProgress?.(`⬇ Downloading audio…`);
-  await ytdlpProgress([
+  const downloadArgs = [
     "-f", "bestaudio/best",
     "-x",
     "--audio-format", "mp3",
@@ -310,7 +318,18 @@ export async function youtubeToMp3(
     ...commonYoutubeArgs(),
     "-o", outputTemplate,
     cleanUrl,
-  ], onProgress, { signal });
+  ];
+  onProgress?.(`mp3-v5 · downloading with yt-dlp 2026.08.19`);
+  try {
+    await ytdlpProgress(downloadArgs, onProgress, { signal });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    onProgress?.(`⚠ yt-dlp failed (${msg.slice(0, 80)}) — retrying with Chrome cookies`);
+    await ytdlpProgress([
+      "--cookies-from-browser", "chrome",
+      ...downloadArgs,
+    ], onProgress, { signal });
+  }
 
   if (!existsSync(stagedPath)) {
     throw new Error(`yt-dlp finished but ${videoId}.mp3 was not created`);

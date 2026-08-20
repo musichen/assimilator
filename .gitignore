@@ -21,6 +21,9 @@ logs/
 results/
 apps/telegram/results/
 
+# pinned YouTube extractor (downloaded by scripts/update-ytdlp.sh)
+bin/yt-dlp
+
 # local Python tools
 .venv/
 venv/

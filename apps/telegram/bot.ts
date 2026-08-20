@@ -722,7 +722,7 @@ bot.onText(/^\/youtube_to_mp3(?:\s+([\s\S]+))?/, async (message, match) => {
   logAction({ ts: new Date().toISOString(), action: "youtube_to_mp3", source: url, status: "started" });
 
   const performer = artist || "YouTube";
-  const status = await bot.sendMessage(message.chat.id, `YouTube to MP3 · mp3-v4\nAnalyzing video...`);
+  const status = await bot.sendMessage(message.chat.id, `YouTube to MP3 · mp3-v5\nAnalyzing video...`);
   let lastUpdate = 0;
   let lastMsg = "🔍 Analyzing video...";
 
@@ -733,7 +733,7 @@ bot.onText(/^\/youtube_to_mp3(?:\s+([\s\S]+))?/, async (message, match) => {
       if (!force && now - lastUpdate < 1000) return;
       lastUpdate = now;
       const elapsed = formatDuration(Date.now() - startTime);
-      void bot.editMessageText(`YouTube to MP3 · ${elapsed}\nmp3-v4\n${msg}`, {
+      void bot.editMessageText(`YouTube to MP3 · ${elapsed}\nmp3-v5\n${msg}`, {
         chat_id: message.chat.id,
         message_id: status.message_id,
       }).catch(() => undefined);
