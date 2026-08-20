@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import TelegramBot from "node-telegram-bot-api";
 import { JobManager, formatDuration, type ActiveOperation } from "./job-manager.js";
+import { getSystemSnapshot, formatSystemSnapshot } from "./system-health.js";
 import { initWorkspace } from "../cli/src/core/workspace.js";
 import { ingestFile, ingestFolder, ingestUrl, processInbox } from "../cli/src/core/ingest.js";
 import { resolveWorkspace } from "../cli/src/core/paths.js";
@@ -278,8 +279,11 @@ bot.onText(/^\/status\b/, async (message) => {
     const status = await getWorkspaceStatus(workspace);
     const counts = Object.entries(status.counts).map(([key, value]) => `- ${key}: ${value}`).join("\n");
     const jobLines = jobManager.statusLines();
+    const sys = await getSystemSnapshot();
     await bot.sendMessage(message.chat.id, [
       ...jobLines,
+      "",
+      formatSystemSnapshot(sys),
       "",
       `Workspace: ${workspace}`,
       `Initialized: ${status.initialized ? "yes" : "no"}`,
