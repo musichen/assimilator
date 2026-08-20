@@ -812,3 +812,50 @@ Not yet a public SaaS:
 - no background job queue
 - no full OCR pipeline UI
 - no local speech-to-text engine bundled
+
+## External Dependencies (reproducible setup)
+
+These are NOT bundled in the repo — run the setup scripts on a new machine:
+
+### 1. yt-dlp (nightly channel)
+YouTube rotates extractor/player-client blocks faster than the monthly stable
+cadence. We pin a nightly binary next to the bot:
+
+```bash
+scripts/update-ytdlp.sh nightly     # -> bin/yt-dlp (nightly)
+```
+
+### 2. YouTube PO-token provider (bgutil, port 4416)
+Since Aug 2026 YouTube intermittently 403s yt-dlp clients that lack a
+Proof-of-Origin token. The bot uses the `web` player client + a local Botguard
+token server:
+
+```bash
+brew install deno                   # required runtime
+scripts/setup-pot-provider.sh       # installs .venv plugin + launchd agent on :4416
+```
+
+The provider also installs `bgutil-ytdlp-pot-provider` + `yt-dlp` into `.venv/`;
+set `ASSIMILATOR_YTDLP_BIN=$PWD/.venv/bin/yt-dlp` in `.env` so the bot uses the
+plugin-enabled binary.
+
+### 3. whisper.cpp (Metal-accelerated transcription, macOS)
+The Python openai-whisper is ~20-40x slower on Apple Silicon. whisper.cpp uses
+the Metal GPU:
+
+```bash
+scripts/update-whisper.sh base      # brew install whisper-cpp + ggml-base.bin
+```
+
+Then in `.env`:
+
+```bash
+ASSIMILATOR_WHISPER_BIN=/opt/homebrew/bin/whisper-cli
+ASSIMILATOR_WHISPER_MODEL=/opt/homebrew/share/whisper-cpp/models/ggml-base.bin
+ASSIMILATOR_WHISPER_LANG=ru         # or omit for auto-detect
+```
+
+### 4. Bot env (minimal)
+```bash
+cp .env.example .env                # BOT_key, ASSIMILATOR_WORKSPACE, ...
+```

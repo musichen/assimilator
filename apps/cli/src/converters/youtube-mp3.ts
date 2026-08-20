@@ -26,7 +26,7 @@ export interface YtDlpOptions {
 
 const YTDLP = resolveYtDlpCommand();
 const DEFAULT_MP3_AUDIO_QUALITY = process.env.ASSIMILATOR_MP3_AUDIO_QUALITY ?? "64K";
-export const YOUTUBE_MP3_PLAYER_CLIENTS = "tv,web_embedded";
+export const YOUTUBE_MP3_PLAYER_CLIENTS = process.env.ASSIMILATOR_YOUTUBE_PLAYER_CLIENTS || "web,tv,web_embedded,visionos";
 export const YOUTUBE_METADATA_TIMEOUT_MS = 25_000;
 export const YOUTUBE_DOWNLOAD_STALL_MS = 45_000;
 export const YOUTUBE_DOWNLOAD_TIMEOUT_MS = 180_000;
@@ -108,6 +108,9 @@ function commonYoutubeArgs(): string[] {
     "--socket-timeout", "15",
     "--retries", "1",
     "--js-runtimes", "node",
+    // EJS challenge-solver scripts (needed to solve YouTube JS challenges
+    // and generate PO tokens); downloaded from the official yt-dlp/ejs repo.
+    "--remote-components", "ejs:github",
     "--extractor-args", `youtube:player_client=${YOUTUBE_MP3_PLAYER_CLIENTS}`,
   ];
 }

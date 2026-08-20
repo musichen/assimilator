@@ -38,15 +38,31 @@ export async function transcribeMediaToMarkdown(
 }
 
 async function transcribeWithWhisper(filePath: string, outputDir: string): Promise<string> {
-  const whisperBin = process.env.ASSIMILATOR_WHISPER_BIN || "whisper";
+  // Whisper.cpp (Metal-accelerated) is the default on macOS; fall back to the
+  // Python whisper CLI if ASSIMILATOR_WHISPER_BIN points elsewhere.
+  // whisper.cpp flags:
+  //   -m  ggml model path   -l  language (auto-detected if omitted)
+  //   -otxt  output txt     -of  output file basename
+  //   -t   threads          --no-prints  quiet
+  const whisperBin = process.env.ASSIMILATOR_WHISPER_BIN || "whisper-cli";
+  const modelPath = process.env.ASSIMILATOR_WHISPER_MODEL;
+  const lang = process.env.ASSIMILATOR_WHISPER_LANG || ""; // "" = auto-detect
+
   const basename = path.basename(filePath, path.extname(filePath));
-  const txtPath = path.join(outputDir, `${basename}.txt`);
-  const args = [
-    filePath,
-    "--model", process.env.ASSIMILATOR_WHISPER_MODEL || "base",
-    "--output_format", "txt",
-    "--output_dir", outputDir,
-  ];
+  const outBase = path.join(outputDir, basename);
+  const txtPath = `${outBase}.txt`;
+
+  const args: string[] = [];
+  if (whisperBin.includes("whisper-cli")) {
+    // whisper.cpp invocation
+    args.push("-f", filePath, "-otxt", "-of", outBase, "--no-prints");
+    if (modelPath) args.push("-m", modelPath);
+    if (lang && lang !== "auto") args.push("-l", lang);
+  } else {
+    // Python openai-whisper invocation
+    args.push(filePath, "--model", process.env.ASSIMILATOR_WHISPER_MODEL || "base", "--output_format", "txt", "--output_dir", outputDir);
+  }
+
   const result = await execFileText(whisperBin, args, 30 * 60_000);
   if (result.exitCode !== 0) {
     throw new Error(`whisper failed: ${result.stderr || result.stdout}`.trim());
