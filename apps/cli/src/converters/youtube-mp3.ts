@@ -319,16 +319,21 @@ export async function youtubeToMp3(
     "-o", outputTemplate,
     cleanUrl,
   ];
-  onProgress?.(`mp3-v5 · downloading with yt-dlp 2026.08.19`);
+  onProgress?.(`⬇ Downloading audio…`);
   try {
     await ytdlpProgress(downloadArgs, onProgress, { signal });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    onProgress?.(`⚠ yt-dlp failed (${msg.slice(0, 80)}) — retrying with Chrome cookies`);
-    await ytdlpProgress([
-      "--cookies-from-browser", "chrome",
-      ...downloadArgs,
-    ], onProgress, { signal });
+    // Timeout/403 usually means the current player client is blocked by
+    // YouTube. Switching client (and retrying with a shorter budget) is far
+    // more likely to succeed than just adding cookies.
+    onProgress?.(`⚠ yt-dlp failed (${msg.slice(0, 80)}) — retrying with alternate client…`);
+    const altArgs = downloadArgs.map((a) =>
+      a === `youtube:player_client=${YOUTUBE_MP3_PLAYER_CLIENTS}`
+        ? "youtube:player_client=android,ios,mweb"
+        : a,
+    );
+    await ytdlpProgress(altArgs, onProgress, { signal, timeoutMs: Math.min(ytDlpDownloadTimeoutMs(), 60_000) });
   }
 
   if (!existsSync(stagedPath)) {
