@@ -10,9 +10,12 @@ export LOG="$HOME/.hermes/logs/assimilator-watchdog.log"
 export PID_FILE="$HOME/.hermes/run/assimilator-bot.pid"
 export PATH="/Users/musichen/.hermes/node/bin:/Users/musichen/.local/bin:/Users/musichen/.nvm/versions/node/v24.14.0/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-# Load env
+# Load env — set -a so ALL variables are exported to the bot process
+# (without it, ASSIMILATOR_WHISPER_BIN/_MODEL/_LANG etc. never reach tsx).
+set -a
 source "$APP_DIR/.env" 2>/dev/null || true
 source "$APP_DIR/.env.local" 2>/dev/null || true
+set +a
 
 # Force IPv4: this network's IPv6 is broken and node's IPv6-first DNS
 # resolution causes EFATAL read ETIMEDOUT in the Telegram long-poll.
