@@ -844,8 +844,12 @@ The Python openai-whisper is ~20-40x slower on Apple Silicon. whisper.cpp uses
 the Metal GPU:
 
 ```bash
-scripts/update-whisper.sh base      # brew install whisper-cpp + ggml-base.bin
+scripts/update-whisper.sh small     # brew install whisper-cpp + ggml-small.bin
 ```
+Model choice: `base` (fastest, ~3s/3min, poor on music) vs `small`
+(recommended, ~14s/3min, transcribes vocals decently) vs `medium`
+(most accurate, slower). Music/songs need at least `small` — `base`
+mostly returns filler on vocal tracks.
 
 Then in `.env`:
 
