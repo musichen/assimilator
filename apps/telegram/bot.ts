@@ -722,21 +722,33 @@ bot.onText(/^\/youtube_to_mp3(?:\s+([\s\S]+))?/, async (message, match) => {
   logAction({ ts: new Date().toISOString(), action: "youtube_to_mp3", source: url, status: "started" });
 
   const performer = artist || "YouTube";
-  const status = await bot.sendMessage(message.chat.id, `🎬 *YouTube → MP3*\\n🔍 Analyzing video...`, { parse_mode: "Markdown" });
+  const status = await bot.sendMessage(message.chat.id, `🎬 *YouTube → MP3*  ·  mp3-v3\n🔍 Analyzing video...`, { parse_mode: "Markdown" });
   let lastUpdate = 0;
+  let lastMsg = "🔍 Analyzing video...";
 
   await runTracked(message.chat.id, `YouTube → MP3: ${url.slice(0, 80)}`, [mp3OutputDir], async (signal, onProgress) => {
-    const result = await youtubeToMp3(url, mp3OutputDir, (msg) => {
-      onProgress?.(msg);
+    const pushStatus = (msg: string, force = false) => {
+      lastMsg = msg;
       const now = Date.now();
-      if (now - lastUpdate > 1000) {
-        lastUpdate = now;
-        void bot.editMessageText(`🎵 ${msg}`, {
-          chat_id: message.chat.id,
-          message_id: status.message_id,
-        }).catch(() => undefined);
-      }
-    }, signal);
+      if (!force && now - lastUpdate < 1000) return;
+      lastUpdate = now;
+      const elapsed = formatDuration(Date.now() - startTime);
+      void bot.editMessageText(`🎬 *YouTube → MP3*  ·  ${elapsed}\n${msg}`, {
+        chat_id: message.chat.id,
+        message_id: status.message_id,
+        parse_mode: "Markdown",
+      }).catch(() => undefined);
+    };
+    const heartbeat = setInterval(() => pushStatus(lastMsg, true), 3000);
+    let result: YoutubeMp3Result;
+    try {
+      result = await youtubeToMp3(url, mp3OutputDir, (msg) => {
+        onProgress?.(msg);
+        pushStatus(msg);
+      }, signal);
+    } finally {
+      clearInterval(heartbeat);
+    }
 
     const duration = formatDuration(Date.now() - startTime);
 

@@ -3,31 +3,30 @@ import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { resolveYtDlpEnv } from "./youtube.js";
 
 const require = createRequire(import.meta.url);
 
-// ── Types ─────────────────────────────────────────────────────────────
-
 export interface YoutubeMp3Result {
-  /** Absolute path to the MP3 file */
   filePath: string;
-  /** YouTube video title (used as filename) */
   title: string;
-  /** File size in bytes */
   size: number;
 }
 
 export interface YoutubePlaylistMp3Result {
-  /** All successfully converted items */
   items: YoutubeMp3Result[];
-  /** Any items that failed */
   errors: { title: string; error: string }[];
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────
+export interface YtDlpOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
 
 const YTDLP = resolveYtDlpCommand();
 const DEFAULT_MP3_AUDIO_QUALITY = process.env.ASSIMILATOR_MP3_AUDIO_QUALITY ?? "64K";
+export const YOUTUBE_MP3_PLAYER_CLIENTS = "android,ios,tv,mweb";
+export const YOUTUBE_METADATA_TIMEOUT_MS = 25_000;
 
 function resolveYtDlpCommand(): string {
   if (process.env.ASSIMILATOR_YTDLP_BIN) return process.env.ASSIMILATOR_YTDLP_BIN;
@@ -68,71 +67,47 @@ export function isYoutubePlaylistUrl(url: string): boolean {
   }
 }
 
-export interface YtDlpOptions {
-  signal?: AbortSignal;
-  timeoutMs?: number;
+/** Extract the 11-char video id from any common YouTube URL. */
+export function extractYoutubeVideoId(url: string): string | undefined {
+  try {
+    const u = new URL(url);
+    if (u.hostname === "youtu.be") {
+      const id = u.pathname.replace(/^\//, "").split("/")[0];
+      return id && id.length === 11 ? id : undefined;
+    }
+    const v = u.searchParams.get("v");
+    if (v && v.length === 11) return v;
+    const short = u.pathname.match(/\/(shorts|embed|live)\/([A-Za-z0-9_-]{11})/);
+    return short?.[2];
+  } catch {
+    return undefined;
+  }
 }
 
-/** Run yt-dlp and return stdout as string. */
+/** Strip tracking/playlist junk so yt-dlp never treats a share link as a mix. */
+export function cleanVideoUrl(url: string): string {
+  const id = extractYoutubeVideoId(url);
+  if (id) return `https://www.youtube.com/watch?v=${id}`;
+  return url;
+}
+
+function commonYoutubeArgs(): string[] {
+  return [
+    "--no-playlist",
+    "--socket-timeout", "20",
+    "--retries", "2",
+    "--extractor-args", `youtube:player_client=${YOUTUBE_MP3_PLAYER_CLIENTS}`,
+  ];
+}
+
 async function ytdlp(args: string[], opts?: YtDlpOptions): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(YTDLP, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    const timeoutMs = opts?.timeoutMs ?? ytDlpDownloadTimeoutMs();
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        child.kill("SIGTERM");
-        setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 3000);
-        reject(new Error(`yt-dlp timed out after ${Math.round(timeoutMs / 1000)}s`));
-      }
-    }, timeoutMs);
-
-    const cleanup = () => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        child.kill("SIGTERM");
-        setTimeout(() => { if (!child.killed) child.kill("SIGKILL"); }, 3000);
-      }
-    };
-
-    opts?.signal?.addEventListener("abort", cleanup, { once: true });
-
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (opts?.signal?.aborted) reject(new Error("ABORTED"));
-      else reject(new Error(`yt-dlp: ${err.message}`));
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (opts?.signal?.aborted) reject(new Error("ABORTED"));
-      else if (code === 0) resolve(stdout);
-      else reject(new Error(stderr.trim() || `yt-dlp exited ${code}`));
-    });
-  });
+  return spawnYtDlp(args, undefined, opts);
 }
 
-/**
- * Run yt-dlp with real-time progress parsing from stderr.
- * Calls onProgress with percentage strings like "▐███▌  42% · 2.1 MiB/s"
- */
 /**
  * Parse a single "[download] ..." progress line from yt-dlp.
- * Returns null for non-progress lines.
  */
-function parseYtDlpProgressLine(line: string): { pct: string; size: string; speed: string; eta: string } | null {
-  // "[download]  42.3% of  3.99MiB at  1.42MiB/s ETA 00:02"
-  // "[download]   0.0% of   19.02MiB at  Unknown B/s ETA Unknown"
+export function parseYtDlpProgressLine(line: string): { pct: string; size: string; speed: string; eta: string } | null {
   const m = line.match(/\[download\]\s+([\d.]+%)\s+of\s+(\S+)\s+at\s+(.+?)\s+ETA\s+(\S+)/);
   if (!m) return null;
   return {
@@ -143,88 +118,116 @@ function parseYtDlpProgressLine(line: string): { pct: string; size: string; spee
   };
 }
 
-/**
- * Run yt-dlp with real-time progress parsing.
- *
- * IMPORTANT: yt-dlp writes the `[download] 42.3% ...` lines to STDOUT (not
- * stderr) in recent builds. We therefore parse BOTH streams, accumulating
- * chunks into a line buffer so lines split across chunks still match.
- */
+export function formatProgressBar(line: string): string | undefined {
+  const progress = parseYtDlpProgressLine(line);
+  if (progress) {
+    const { pct, size, speed, eta } = progress;
+    const barLen = 12;
+    const filled = Math.min(barLen, Math.round((parseFloat(pct) / 100) * barLen));
+    const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
+    return `${bar} ${pct.padStart(5)} · ${size} · ${speed} · ETA ${eta}`;
+  }
+  if (/\[ExtractAudio\]/.test(line)) return "🎙 Converting to MP3…";
+  if (/\[ffmpeg\]/.test(line) && /Destination/.test(line)) return "🎙 Encoding MP3…";
+  if (/\[youtube\].*Downloading/i.test(line)) return `📡 ${line.replace(/^\[youtube\]\s*/, "").slice(0, 80)}`;
+  if (/\[info\]/.test(line)) return `ℹ ${line.replace(/^\[info\]\s*/, "").slice(0, 90)}`;
+  if (/WARNING:/.test(line) && /403|429|PO Token|SABR/i.test(line)) {
+    return `⚠ ${line.replace(/^WARNING:\s*/, "").slice(0, 90)}`;
+  }
+  return undefined;
+}
+
 async function ytdlpProgress(
   args: string[],
   onProgress?: (msg: string) => void,
   opts?: YtDlpOptions,
 ): Promise<string> {
+  return spawnYtDlp(args, onProgress, opts);
+}
+
+function spawnYtDlp(
+  args: string[],
+  onProgress?: (msg: string) => void,
+  opts?: YtDlpOptions,
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(YTDLP, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(YTDLP, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: resolveYtDlpEnv(),
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let lastProgressAt = Date.now();
+    let lastProgressMsg = "";
 
     const timeoutMs = opts?.timeoutMs ?? ytDlpDownloadTimeoutMs();
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
+        clearInterval(heartbeat);
         child.kill("SIGTERM");
         setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 3000);
         reject(new Error(`yt-dlp timed out after ${Math.round(timeoutMs / 1000)}s`));
       }
     }, timeoutMs);
 
+    const heartbeat = setInterval(() => {
+      if (settled || !onProgress) return;
+      const silentFor = Date.now() - lastProgressAt;
+      if (silentFor >= 3000) {
+        const elapsed = Math.round((Date.now() - (Date.now() - silentFor)) / 1000);
+        void elapsed;
+        onProgress(`${lastProgressMsg || "working…"} · still running ${Math.round(silentFor / 1000)}s`);
+      }
+    }, 3000);
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(heartbeat);
+      fn();
+    };
+
     const cleanup = () => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
+      finish(() => {
         child.kill("SIGTERM");
         setTimeout(() => { if (!child.killed) child.kill("SIGKILL"); }, 3000);
-      }
+      });
     };
 
     opts?.signal?.addEventListener("abort", cleanup, { once: true });
 
-    // Parse progress from an accumulated text buffer (handles chunk splits).
     let lineBuffer = "";
     const onData = (chunk: Buffer) => {
       lineBuffer += String(chunk);
-      const lines = lineBuffer.split("\n");
+      const lines = lineBuffer.split(/\r?\n/);
       lineBuffer = lines.pop() ?? "";
       for (const line of lines) {
-        const progress = parseYtDlpProgressLine(line);
-        if (progress) {
-          const { pct, size, speed, eta } = progress;
-          const barLen = 12;
-          const filled = Math.round((parseFloat(pct) / 100) * barLen);
-          const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
-          onProgress?.(`${bar} ${pct.padStart(5)} · ${size} · ${speed} · ETA ${eta}`);
-        }
-        const extractMatch = line.match(/\[ExtractAudio\]\s+Destination:\s*(.+)/);
-        if (extractMatch) {
-          onProgress?.("Converting to MP3...");
+        const formatted = formatProgressBar(line);
+        if (formatted) {
+          lastProgressAt = Date.now();
+          lastProgressMsg = formatted;
+          onProgress?.(formatted);
         }
       }
     };
 
     child.stdout.on("data", (chunk) => { stdout += String(chunk); onData(chunk); });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-      onData(chunk);
-    });
-
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); onData(chunk); });
     child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (opts?.signal?.aborted) reject(new Error("ABORTED"));
-      else reject(new Error(`yt-dlp: ${err.message}`));
+      finish(() => {
+        if (opts?.signal?.aborted) reject(new Error("ABORTED"));
+        else reject(new Error(`yt-dlp: ${err.message}`));
+      });
     });
     child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (opts?.signal?.aborted) reject(new Error("ABORTED"));
-      else if (code === 0) resolve(stdout);
-      else reject(new Error(stderr.trim() || `yt-dlp exited ${code}`));
+      finish(() => {
+        if (opts?.signal?.aborted) reject(new Error("ABORTED"));
+        else if (code === 0) resolve(stdout);
+        else reject(new Error(stderr.trim() || `yt-dlp exited ${code}`));
+      });
     });
   });
 }
@@ -251,27 +254,9 @@ function safeFilename(title: string): string {
     .slice(0, 200) || "untitled";
 }
 
-/** Strip playlist/radio params from a YouTube video URL so yt-dlp downloads only the one video. */
-function cleanVideoUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    if (u.hostname === "youtu.be") return url; // short links are always single video
-    // Remove playlist/radio/mix params that make yt-dlp download the whole mix
-    u.searchParams.delete("list");
-    u.searchParams.delete("start_radio");
-    u.searchParams.delete("index");
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
-
-// ── Single video ──────────────────────────────────────────────────────
-
 /**
  * Download a single YouTube video as MP3.
- * Uses yt-dlp to extract best audio, convert to MP3 via ffmpeg,
- * embed thumbnail and metadata. Filename = video title.
+ * Metadata probe is hard-capped at 25s — if YouTube hangs, we still download.
  */
 export async function youtubeToMp3(
   url: string,
@@ -283,63 +268,60 @@ export async function youtubeToMp3(
   if (signal?.aborted) throw new Error("ABORTED");
 
   const cleanUrl = cleanVideoUrl(url);
+  const videoId = extractYoutubeVideoId(cleanUrl) || `yt-${Date.now()}`;
 
-  onProgress?.("🔍 Fetching video info...");
-  // IMPORTANT: the metadata fetch must use the same non-blocked player client.
-  // The default web client gets 403/rate-limited by YouTube and can hang for
-  // the full timeout; android/ios clients are not blocked.
-  const infoJson = await ytdlp([
-    "--dump-json",
-    "--skip-download",
-    "--socket-timeout", "30",
-    "--extractor-args", "youtube:player_client=android,ios",
-    cleanUrl,
-  ], { signal });
-  const info = JSON.parse(infoJson.split(/\r?\n/).find(Boolean) ?? "{}") as {
-    title?: string;
-    uploader?: string;
-  };
-  const title = info.title || "Unknown";
+  onProgress?.(`mp3-v3 · 🔍 Fetching title for ${videoId}…`);
+  let title = videoId;
+  try {
+    const infoJson = await ytdlp([
+      "--dump-json",
+      "--skip-download",
+      ...commonYoutubeArgs(),
+      cleanUrl,
+    ], { signal, timeoutMs: YOUTUBE_METADATA_TIMEOUT_MS });
+    const info = JSON.parse(infoJson.split(/\r?\n/).find(Boolean) ?? "{}") as { title?: string };
+    if (info.title) title = info.title;
+    onProgress?.(`⬇ ${title}`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    onProgress?.(`⚠ Title probe failed (${msg.slice(0, 80)}) — downloading anyway`);
+  }
+
   const filename = safeFilename(title);
-
-  onProgress?.(`⬇ ${title}`);
-
+  const stagedPath = path.join(outputDir, `${videoId}.mp3`);
   const filePath = path.join(outputDir, `${filename}.mp3`);
-  await fs.rm(filePath, { force: true });
+  await fs.rm(stagedPath, { force: true });
+  if (filePath !== stagedPath) await fs.rm(filePath, { force: true });
 
-  const outputTemplate = path.join(outputDir, `${filename}.%(ext)s`);
+  const outputTemplate = path.join(outputDir, `${videoId}.%(ext)s`);
+  onProgress?.(`⬇ Downloading audio…`);
   await ytdlpProgress([
     "-f", "bestaudio/best",
     "-x",
     "--audio-format", "mp3",
     "--audio-quality", DEFAULT_MP3_AUDIO_QUALITY,
-    "--retries", "5",
-    "--retry-sleep", "5",
-    "--extractor-retries", "5",
-    "--socket-timeout", "30",
-    // YouTube blocks the web player client (HTTP 403 on video data).
-    // The android client is not blocked and serves a direct mp4/m4a stream.
-    "--extractor-args", "youtube:player_client=android,ios",
+    "--retry-sleep", "3",
+    "--extractor-retries", "3",
     "--add-metadata",
-    "--embed-thumbnail",
     "--newline",
+    ...commonYoutubeArgs(),
     "-o", outputTemplate,
     cleanUrl,
   ], onProgress, { signal });
 
+  if (!existsSync(stagedPath)) {
+    throw new Error(`yt-dlp finished but ${videoId}.mp3 was not created`);
+  }
+  if (filePath !== stagedPath) {
+    await fs.rm(filePath, { force: true });
+    await fs.rename(stagedPath, filePath);
+  }
+
   const stat = await fs.stat(filePath);
-
   onProgress?.(`✅ ${filename} · ${(stat.size / 1024 / 1024).toFixed(1)} MB`);
-
   return { filePath, title, size: stat.size };
 }
 
-// ── Playlist ──────────────────────────────────────────────────────────
-
-/**
- * Download an entire YouTube playlist as MP3 files.
- * Each file gets the video title as filename with embedded metadata.
- */
 export async function youtubePlaylistToMp3(
   playlistUrl: string,
   outputDir: string,
@@ -349,15 +331,14 @@ export async function youtubePlaylistToMp3(
   await fs.mkdir(outputDir, { recursive: true });
   if (signal?.aborted) throw new Error("ABORTED");
 
-  onProgress?.("🔍 Fetching playlist info...");
+  onProgress?.("🔍 Fetching playlist info…");
   const flatJson = await ytdlp([
     "--flat-playlist",
     "--dump-json",
     "--skip-download",
-    "--socket-timeout", "30",
-    "--extractor-args", "youtube:player_client=android,ios",
+    ...commonYoutubeArgs(),
     playlistUrl,
-  ], { signal });
+  ], { signal, timeoutMs: 60_000 });
 
   const entries = flatJson
     .split(/\r?\n/)
@@ -381,7 +362,6 @@ export async function youtubePlaylistToMp3(
     onProgress?.(`[${idx}/${entries.length}] ⬇ ${label}`);
 
     try {
-      // Delegate to single-video download — progress bars stream through
       const prefix = `[${idx}/${entries.length}] `;
       const result = await youtubeToMp3(videoUrl, outputDir, (msg) => onProgress?.(`${prefix}${msg}`), signal);
       items.push(result);
@@ -391,16 +371,14 @@ export async function youtubePlaylistToMp3(
       onProgress?.(`[${idx}/${entries.length}] ❌ ${label} — ${msg}`);
     }
 
-    // Rate-limit protection: YouTube 403s rapid back-to-back downloads.
     if (idx < entries.length && !signal?.aborted) {
       const delayMs = playlistTrackDelayMs();
-      onProgress?.(`⏳ ${Math.round(delayMs / 1000)}s pause before next track...`);
+      onProgress?.(`⏳ ${Math.round(delayMs / 1000)}s pause before next track…`);
       await sleep(delayMs);
     }
   }
 
-  const summary = `✅ ${items.length}/${entries.length} done`;
-  onProgress?.(summary);
+  onProgress?.(`✅ ${items.length}/${entries.length} done`);
   if (errors.length > 0) {
     onProgress?.(`❌ ${errors.length} failed: ${errors.map(e => e.title).join(", ")}`);
   }

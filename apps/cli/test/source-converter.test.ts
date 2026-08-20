@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { convertLocalFileToMarkdown } from "../src/converters/source-converter.js";
 import { isYoutubeUrl, vttToText, buildYoutubeSubtitleArgs, pickPreferredSubtitle, DEFAULT_YOUTUBE_SUB_LANGS } from "../src/converters/youtube.js";
+import { cleanVideoUrl, extractYoutubeVideoId, formatProgressBar, parseYtDlpProgressLine, YOUTUBE_METADATA_TIMEOUT_MS } from "../src/converters/youtube-mp3.js";
 
 describe("source converter", () => {
   it("uses local conversion for Markdown and Showdown HTML import", async () => {
@@ -79,5 +80,24 @@ describe("source converter", () => {
       "5FcHP22u0zs.en.vtt",
       "5FcHP22u0zs.en-orig.vtt",
     ])).toBe("5FcHP22u0zs.en-orig.vtt");
+  });
+});
+
+describe("youtube mp3 helpers", () => {
+  it("strips share-tracking junk from youtu.be links", () => {
+    expect(extractYoutubeVideoId("https://youtu.be/EkFuv7cjJCA?is=RQO-YCOamq5eDcTy")).toBe("EkFuv7cjJCA");
+    expect(cleanVideoUrl("https://youtu.be/EkFuv7cjJCA?is=RQO-YCOamq5eDcTy"))
+      .toBe("https://www.youtube.com/watch?v=EkFuv7cjJCA");
+  });
+
+  it("caps the metadata probe far below the 8-minute download timeout", () => {
+    expect(YOUTUBE_METADATA_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+  });
+
+  it("turns yt-dlp download lines into a progress bar", () => {
+    const formatted = formatProgressBar("[download]  42.3% of  3.99MiB at  1.42MiB/s ETA 00:02");
+    expect(formatted).toContain("42.3%");
+    expect(formatted).toContain("ETA 00:02");
+    expect(parseYtDlpProgressLine("not a progress line")).toBeNull();
   });
 });
