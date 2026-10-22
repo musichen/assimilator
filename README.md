@@ -863,3 +863,7 @@ ASSIMILATOR_WHISPER_LANG=ru         # or omit for auto-detect
 ```bash
 cp .env.example .env                # BOT_key, ASSIMILATOR_WORKSPACE, ...
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
