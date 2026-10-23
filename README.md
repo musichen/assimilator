@@ -33,6 +33,16 @@ It can also optionally:
 - search converted/wiki material
 - inventory a book library without ingesting all books
 
+## Documentation
+
+Deeper guides live in [`docs/`](docs/):
+
+- [docs/architecture.md](docs/architecture.md) - system architecture
+- [docs/cli-reference.md](docs/cli-reference.md) - full CLI reference
+- [docs/converter-strategy.md](docs/converter-strategy.md) - how converters are chosen
+- [docs/webscraping-integration.md](docs/webscraping-integration.md) - web scraping integration
+- [docs/development-log.md](docs/development-log.md) and [docs/implementation-notes.md](docs/implementation-notes.md) - build history and notes
+
 ## Install
 
 Requirements:
